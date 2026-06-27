@@ -1,0 +1,214 @@
+import { Router } from "express";
+import { db } from "@workspace/db";
+import { scannedReceipts, receiptItems, receiptTransactionMatches } from "@workspace/db";
+import { eq, and, gte, lte, like, sql } from "drizzle-orm";
+import {
+  CreateReceiptBody,
+  UpdateReceiptBody,
+  CreateReceiptItemBody,
+  ListReceiptsQueryParams,
+  ListExpiringReceiptsQueryParams,
+} from "@workspace/api-zod";
+
+const router = Router();
+
+function serializeReceipt(r: any, matchId?: number | null) {
+  return {
+    id: r.id,
+    sourceFilePath: r.sourceFilePath,
+    ocrEngine: r.ocrEngine,
+    storeName: r.storeName ?? null,
+    storeAddress: r.storeAddress ?? null,
+    purchaseDate: r.purchaseDate ?? null,
+    subtotal: r.subtotal ?? null,
+    tax: r.tax ?? null,
+    total: r.total ?? null,
+    paymentMethod: r.paymentMethod ?? null,
+    returnWindowDays: r.returnWindowDays ?? null,
+    returnDeadline: r.returnDeadline ?? null,
+    processingStatus: r.processingStatus,
+    ocrConfidence: r.ocrConfidence ?? null,
+    notes: r.notes ?? null,
+    matchId: matchId ?? null,
+    createdAt: r.createdAt?.toISOString?.() ?? r.createdAt ?? "",
+    updatedAt: r.updatedAt?.toISOString?.() ?? r.updatedAt ?? "",
+  };
+}
+
+async function getMatchMap(receiptIds: number[]) {
+  if (!receiptIds.length) return new Map<number, number>();
+  const matchRows = await db
+    .select({ receiptId: receiptTransactionMatches.receiptId, id: receiptTransactionMatches.id })
+    .from(receiptTransactionMatches)
+    .where(sql`${receiptTransactionMatches.receiptId} = ANY(${sql.raw(`ARRAY[${receiptIds.join(",")}]::int[]`)})`)
+  return new Map(matchRows.map((m) => [m.receiptId, m.id]));
+}
+
+router.get("/expiring", async (req, res) => {
+  const parsed = ListExpiringReceiptsQueryParams.safeParse(req.query);
+  const days = parsed.success && parsed.data.days != null ? parsed.data.days : 14;
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() + days);
+  const cutoffStr = cutoff.toISOString().slice(0, 10);
+  const todayStr = new Date().toISOString().slice(0, 10);
+
+  const rows = await db
+    .select()
+    .from(scannedReceipts)
+    .where(
+      and(
+        sql`${scannedReceipts.returnDeadline} IS NOT NULL`,
+        gte(scannedReceipts.returnDeadline, todayStr),
+        lte(scannedReceipts.returnDeadline, cutoffStr)
+      )
+    )
+    .orderBy(scannedReceipts.returnDeadline);
+
+  const mm = await getMatchMap(rows.map((r) => r.id));
+  res.json(rows.map((r) => serializeReceipt(r, mm.get(r.id))));
+});
+
+router.get("/unmatched", async (_req, res) => {
+  const matched = db
+    .select({ id: receiptTransactionMatches.receiptId })
+    .from(receiptTransactionMatches);
+
+  const rows = await db
+    .select()
+    .from(scannedReceipts)
+    .where(sql`${scannedReceipts.id} NOT IN (${matched})`)
+    .orderBy(scannedReceipts.createdAt);
+
+  res.json(rows.map((r) => serializeReceipt(r)));
+});
+
+router.get("/", async (req, res) => {
+  const parsed = ListReceiptsQueryParams.safeParse(req.query);
+  const params = parsed.success ? parsed.data : {};
+
+  const conditions = [];
+  if (params.status) conditions.push(eq(scannedReceipts.processingStatus, params.status));
+  if (params.search) conditions.push(like(scannedReceipts.storeName, `%${params.search}%`));
+  if (params.from) conditions.push(gte(scannedReceipts.purchaseDate, params.from));
+  if (params.to) conditions.push(lte(scannedReceipts.purchaseDate, params.to));
+
+  const rows = await db
+    .select()
+    .from(scannedReceipts)
+    .where(conditions.length ? and(...conditions) : undefined)
+    .orderBy(scannedReceipts.createdAt);
+
+  const mm = await getMatchMap(rows.map((r) => r.id));
+  res.json(rows.map((r) => serializeReceipt(r, mm.get(r.id))));
+});
+
+router.post("/", async (req, res) => {
+  const parsed = CreateReceiptBody.safeParse(req.body);
+  if (!parsed.success) return void res.status(400).json({ error: "Invalid input" });
+
+  const { sourceFilePath, ocrEngine, sourceFileHash, storeName, purchaseDate, total, returnWindowDays, notes } = parsed.data;
+
+  let returnDeadline: string | null = null;
+  if (purchaseDate && returnWindowDays) {
+    const d = new Date(purchaseDate);
+    d.setDate(d.getDate() + returnWindowDays);
+    returnDeadline = d.toISOString().slice(0, 10);
+  }
+
+  const [row] = await db
+    .insert(scannedReceipts)
+    .values({
+      sourceFilePath,
+      sourceFileHash: sourceFileHash ?? null,
+      ocrEngine,
+      storeName: storeName ?? null,
+      purchaseDate: purchaseDate ?? null,
+      total: total ?? null,
+      returnWindowDays: returnWindowDays ?? null,
+      returnDeadline,
+      notes: notes ?? null,
+      processingStatus: "pending",
+    })
+    .returning();
+
+  res.status(201).json(serializeReceipt(row));
+});
+
+router.get("/:receiptId", async (req, res) => {
+  const id = Number(req.params.receiptId);
+  const [row] = await db.select().from(scannedReceipts).where(eq(scannedReceipts.id, id)).limit(1);
+  if (!row) return void res.status(404).json({ error: "Receipt not found" });
+
+  const items = await db.select().from(receiptItems).where(eq(receiptItems.receiptId, id)).orderBy(receiptItems.sortOrder);
+  const match = await db
+    .select({ id: receiptTransactionMatches.id })
+    .from(receiptTransactionMatches)
+    .where(eq(receiptTransactionMatches.receiptId, id))
+    .limit(1);
+
+  res.json({ ...serializeReceipt(row, match[0]?.id ?? null), items });
+});
+
+router.patch("/:receiptId", async (req, res) => {
+  const id = Number(req.params.receiptId);
+  const parsed = UpdateReceiptBody.safeParse(req.body);
+  if (!parsed.success) return void res.status(400).json({ error: "Invalid input" });
+
+  const updates: Record<string, any> = { updatedAt: new Date() };
+  const d = parsed.data;
+  if (d.storeName !== undefined) updates.storeName = d.storeName;
+  if (d.storeAddress !== undefined) updates.storeAddress = d.storeAddress;
+  if (d.purchaseDate !== undefined) updates.purchaseDate = d.purchaseDate;
+  if (d.subtotal !== undefined) updates.subtotal = d.subtotal;
+  if (d.tax !== undefined) updates.tax = d.tax;
+  if (d.total !== undefined) updates.total = d.total;
+  if (d.paymentMethod !== undefined) updates.paymentMethod = d.paymentMethod;
+  if (d.returnWindowDays !== undefined) {
+    updates.returnWindowDays = d.returnWindowDays;
+    if (d.returnWindowDays && updates.purchaseDate) {
+      const dt = new Date(updates.purchaseDate);
+      dt.setDate(dt.getDate() + d.returnWindowDays);
+      updates.returnDeadline = dt.toISOString().slice(0, 10);
+    }
+  }
+  if (d.notes !== undefined) updates.notes = d.notes;
+
+  const [row] = await db.update(scannedReceipts).set(updates).where(eq(scannedReceipts.id, id)).returning();
+  if (!row) return void res.status(404).json({ error: "Receipt not found" });
+
+  const match = await db
+    .select({ id: receiptTransactionMatches.id })
+    .from(receiptTransactionMatches)
+    .where(eq(receiptTransactionMatches.receiptId, id))
+    .limit(1);
+
+  res.json(serializeReceipt(row, match[0]?.id ?? null));
+});
+
+router.delete("/:receiptId", async (req, res) => {
+  await db.delete(scannedReceipts).where(eq(scannedReceipts.id, Number(req.params.receiptId)));
+  res.status(204).send();
+});
+
+router.get("/:receiptId/items", async (req, res) => {
+  const items = await db
+    .select()
+    .from(receiptItems)
+    .where(eq(receiptItems.receiptId, Number(req.params.receiptId)))
+    .orderBy(receiptItems.sortOrder);
+  res.json(items);
+});
+
+router.post("/:receiptId/items", async (req, res) => {
+  const parsed = CreateReceiptItemBody.safeParse(req.body);
+  if (!parsed.success) return void res.status(400).json({ error: "Invalid input" });
+
+  const [item] = await db
+    .insert(receiptItems)
+    .values({ receiptId: Number(req.params.receiptId), ...parsed.data })
+    .returning();
+
+  res.status(201).json(item);
+});
+
+export default router;
