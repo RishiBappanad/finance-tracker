@@ -6,6 +6,10 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export interface HealthStatus {
-  status: string;
-}
+export type ListExpiringReceiptsParams = {
+/**
+ * Look-ahead window in days (default 14)
+ * @nullable
+ */
+days?: number | null;
+};

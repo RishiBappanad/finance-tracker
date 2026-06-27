@@ -1,22 +1,31 @@
 openapi: 3.1.0
 info:
-  # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: Receipt-to-Wallet API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: accounts
+    description: Bank account management
+  - name: transactions
+    description: Bank transaction operations
+  - name: receipts
+    description: Scanned receipt operations
+  - name: matches
+    description: Receipt-transaction reconciliation
+  - name: dashboard
+    description: Summary and analytics
+
 paths:
   /healthz:
     get:
       operationId: healthCheck
       tags: [health]
       summary: Health check
-      description: Returns server health status
       responses:
         "200":
           description: Healthy
@@ -24,13 +33,855 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  # ── ACCOUNTS ────────────────────────────────────────────────────────────────
+  /accounts:
+    get:
+      operationId: listAccounts
+      tags: [accounts]
+      summary: List all linked bank accounts
+      responses:
+        "200":
+          description: List of accounts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Account"
+    post:
+      operationId: createAccount
+      tags: [accounts]
+      summary: Link a new bank account (via Plaid token exchange)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AccountInput"
+      responses:
+        "201":
+          description: Account linked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+
+  /accounts/{accountId}:
+    get:
+      operationId: getAccount
+      tags: [accounts]
+      summary: Get a single account
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: deleteAccount
+      tags: [accounts]
+      summary: Unlink a bank account
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Account unlinked
+
+  # ── TRANSACTIONS ─────────────────────────────────────────────────────────────
+  /transactions:
+    get:
+      operationId: listTransactions
+      tags: [transactions]
+      summary: List bank transactions
+      parameters:
+        - name: accountId
+          in: query
+          schema:
+            type: ["string", "null"]
+        - name: pending
+          in: query
+          schema:
+            type: ["boolean", "null"]
+        - name: from
+          in: query
+          schema:
+            type: ["string", "null"]
+          description: ISO date (YYYY-MM-DD)
+        - name: to
+          in: query
+          schema:
+            type: ["string", "null"]
+          description: ISO date (YYYY-MM-DD)
+        - name: search
+          in: query
+          schema:
+            type: ["string", "null"]
+      responses:
+        "200":
+          description: List of transactions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Transaction"
+
+  /transactions/sync:
+    post:
+      operationId: syncTransactions
+      tags: [transactions]
+      summary: Pull latest transactions from Plaid for all linked accounts
+      responses:
+        "200":
+          description: Sync result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SyncResult"
+
+  /transactions/unmatched:
+    get:
+      operationId: listUnmatchedTransactions
+      tags: [transactions]
+      summary: Transactions that have no linked receipt
+      responses:
+        "200":
+          description: Unmatched transactions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Transaction"
+
+  /transactions/{transactionId}:
+    get:
+      operationId: getTransaction
+      tags: [transactions]
+      summary: Get a single bank transaction
+      parameters:
+        - name: transactionId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Transaction
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Transaction"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ── RECEIPTS ────────────────────────────────────────────────────────────────
+  /receipts:
+    get:
+      operationId: listReceipts
+      tags: [receipts]
+      summary: List all scanned receipts
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: ["string", "null"]
+          description: "Filter by processing_status: pending | ocr_complete | matched | unmatched | error"
+        - name: search
+          in: query
+          schema:
+            type: ["string", "null"]
+        - name: from
+          in: query
+          schema:
+            type: ["string", "null"]
+        - name: to
+          in: query
+          schema:
+            type: ["string", "null"]
+      responses:
+        "200":
+          description: List of receipts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Receipt"
+    post:
+      operationId: createReceipt
+      tags: [receipts]
+      summary: Submit a new receipt for OCR processing
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReceiptInput"
+      responses:
+        "201":
+          description: Receipt created and queued for OCR
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Receipt"
+
+  /receipts/expiring:
+    get:
+      operationId: listExpiringReceipts
+      tags: [receipts]
+      summary: Receipts whose return window expires within the next N days
+      parameters:
+        - name: days
+          in: query
+          schema:
+            type: ["integer", "null"]
+          description: Look-ahead window in days (default 14)
+      responses:
+        "200":
+          description: Expiring receipts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Receipt"
+
+  /receipts/unmatched:
+    get:
+      operationId: listUnmatchedReceipts
+      tags: [receipts]
+      summary: Receipts that have no linked bank transaction
+      responses:
+        "200":
+          description: Unmatched receipts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Receipt"
+
+  /receipts/{receiptId}:
+    get:
+      operationId: getReceipt
+      tags: [receipts]
+      summary: Get a single receipt with its items
+      parameters:
+        - name: receiptId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Receipt
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReceiptDetail"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    patch:
+      operationId: updateReceipt
+      tags: [receipts]
+      summary: Update receipt metadata
+      parameters:
+        - name: receiptId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReceiptUpdate"
+      responses:
+        "200":
+          description: Updated receipt
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Receipt"
+    delete:
+      operationId: deleteReceipt
+      tags: [receipts]
+      summary: Delete a receipt and its items
+      parameters:
+        - name: receiptId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+
+  /receipts/{receiptId}/items:
+    get:
+      operationId: listReceiptItems
+      tags: [receipts]
+      summary: List line items for a receipt
+      parameters:
+        - name: receiptId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Receipt items
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ReceiptItem"
+    post:
+      operationId: createReceiptItem
+      tags: [receipts]
+      summary: Add a line item to a receipt
+      parameters:
+        - name: receiptId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReceiptItemInput"
+      responses:
+        "201":
+          description: Item added
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReceiptItem"
+
+  # ── RECONCILIATION / MATCHES ─────────────────────────────────────────────────
+  /reconcile:
+    post:
+      operationId: runReconciliation
+      tags: [matches]
+      summary: Auto-match unmatched receipts against unmatched transactions
+      responses:
+        "200":
+          description: Reconciliation results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReconcileResult"
+
+  /matches:
+    get:
+      operationId: listMatches
+      tags: [matches]
+      summary: List all receipt-transaction matches
+      parameters:
+        - name: confirmed
+          in: query
+          schema:
+            type: ["boolean", "null"]
+        - name: method
+          in: query
+          schema:
+            type: ["string", "null"]
+          description: "auto | manual"
+      responses:
+        "200":
+          description: List of matches
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Match"
+    post:
+      operationId: createMatch
+      tags: [matches]
+      summary: Manually link a receipt to a transaction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MatchInput"
+      responses:
+        "201":
+          description: Match created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Match"
+
+  /matches/{matchId}:
+    patch:
+      operationId: updateMatch
+      tags: [matches]
+      summary: Confirm or update a match
+      parameters:
+        - name: matchId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MatchUpdate"
+      responses:
+        "200":
+          description: Updated match
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Match"
+    delete:
+      operationId: deleteMatch
+      tags: [matches]
+      summary: Remove a match link
+      parameters:
+        - name: matchId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+
+  # ── DASHBOARD ────────────────────────────────────────────────────────────────
+  /dashboard/summary:
+    get:
+      operationId: getDashboardSummary
+      tags: [dashboard]
+      summary: Aggregated stats for the home dashboard
+      responses:
+        "200":
+          description: Dashboard summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardSummary"
+
+  /dashboard/spending-by-category:
+    get:
+      operationId: getSpendingByCategory
+      tags: [dashboard]
+      summary: Spending totals grouped by merchant category
+      parameters:
+        - name: from
+          in: query
+          schema:
+            type: ["string", "null"]
+        - name: to
+          in: query
+          schema:
+            type: ["string", "null"]
+      responses:
+        "200":
+          description: Category spending
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CategorySpend"
+
 components:
   schemas:
     HealthStatus:
       type: object
+      required: [status]
       properties:
         status:
           type: string
-      required:
-        - status
 
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+
+    # ── ACCOUNT ──────────────────────────────────────────────────────────────
+    Account:
+      type: object
+      required: [id, institutionId, institutionName, name, type, mask, currency, createdAt]
+      properties:
+        id:
+          type: string
+        institutionId:
+          type: string
+        institutionName:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+        subtype:
+          type: ["string", "null"]
+        mask:
+          type: ["string", "null"]
+        currency:
+          type: string
+        createdAt:
+          type: string
+
+    AccountInput:
+      type: object
+      required: [publicToken, institutionId, institutionName]
+      properties:
+        publicToken:
+          type: string
+        institutionId:
+          type: string
+        institutionName:
+          type: string
+
+    # ── TRANSACTION ──────────────────────────────────────────────────────────
+    Transaction:
+      type: object
+      required: [id, accountId, amount, currency, date, pending, createdAt]
+      properties:
+        id:
+          type: string
+        accountId:
+          type: string
+        amount:
+          type: number
+        currency:
+          type: string
+        merchantName:
+          type: ["string", "null"]
+        merchantNameRaw:
+          type: ["string", "null"]
+        categoryPrimary:
+          type: ["string", "null"]
+        categoryDetail:
+          type: ["string", "null"]
+        date:
+          type: string
+        pending:
+          type: boolean
+        matchId:
+          type: ["integer", "null"]
+        createdAt:
+          type: string
+
+    SyncResult:
+      type: object
+      required: [added, removed, updated, accounts]
+      properties:
+        added:
+          type: integer
+        removed:
+          type: integer
+        updated:
+          type: integer
+        accounts:
+          type: integer
+
+    # ── RECEIPT ──────────────────────────────────────────────────────────────
+    Receipt:
+      type: object
+      required: [id, sourceFilePath, ocrEngine, processingStatus, createdAt, updatedAt]
+      properties:
+        id:
+          type: integer
+        sourceFilePath:
+          type: string
+        ocrEngine:
+          type: string
+        storeName:
+          type: ["string", "null"]
+        storeAddress:
+          type: ["string", "null"]
+        purchaseDate:
+          type: ["string", "null"]
+        subtotal:
+          type: ["number", "null"]
+        tax:
+          type: ["number", "null"]
+        total:
+          type: ["number", "null"]
+        paymentMethod:
+          type: ["string", "null"]
+        returnWindowDays:
+          type: ["integer", "null"]
+        returnDeadline:
+          type: ["string", "null"]
+        processingStatus:
+          type: string
+        ocrConfidence:
+          type: ["number", "null"]
+        notes:
+          type: ["string", "null"]
+        matchId:
+          type: ["integer", "null"]
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+
+    ReceiptDetail:
+      type: object
+      required: [id, sourceFilePath, ocrEngine, processingStatus, items, createdAt, updatedAt]
+      properties:
+        id:
+          type: integer
+        sourceFilePath:
+          type: string
+        ocrEngine:
+          type: string
+        storeName:
+          type: ["string", "null"]
+        storeAddress:
+          type: ["string", "null"]
+        purchaseDate:
+          type: ["string", "null"]
+        subtotal:
+          type: ["number", "null"]
+        tax:
+          type: ["number", "null"]
+        total:
+          type: ["number", "null"]
+        paymentMethod:
+          type: ["string", "null"]
+        returnWindowDays:
+          type: ["integer", "null"]
+        returnDeadline:
+          type: ["string", "null"]
+        processingStatus:
+          type: string
+        ocrConfidence:
+          type: ["number", "null"]
+        notes:
+          type: ["string", "null"]
+        matchId:
+          type: ["integer", "null"]
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReceiptItem"
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+
+    ReceiptInput:
+      type: object
+      required: [sourceFilePath, ocrEngine]
+      properties:
+        sourceFilePath:
+          type: string
+        ocrEngine:
+          type: string
+        sourceFileHash:
+          type: ["string", "null"]
+        storeName:
+          type: ["string", "null"]
+        purchaseDate:
+          type: ["string", "null"]
+        total:
+          type: ["number", "null"]
+        returnWindowDays:
+          type: ["integer", "null"]
+        notes:
+          type: ["string", "null"]
+
+    ReceiptUpdate:
+      type: object
+      properties:
+        storeName:
+          type: ["string", "null"]
+        storeAddress:
+          type: ["string", "null"]
+        purchaseDate:
+          type: ["string", "null"]
+        subtotal:
+          type: ["number", "null"]
+        tax:
+          type: ["number", "null"]
+        total:
+          type: ["number", "null"]
+        paymentMethod:
+          type: ["string", "null"]
+        returnWindowDays:
+          type: ["integer", "null"]
+        notes:
+          type: ["string", "null"]
+
+    ReceiptItem:
+      type: object
+      required: [id, receiptId, description, quantity, unitPrice, lineTotal]
+      properties:
+        id:
+          type: integer
+        receiptId:
+          type: integer
+        description:
+          type: string
+        quantity:
+          type: number
+        unitPrice:
+          type: number
+        lineTotal:
+          type: number
+        category:
+          type: ["string", "null"]
+        sku:
+          type: ["string", "null"]
+        isTaxable:
+          type: boolean
+        sortOrder:
+          type: integer
+
+    ReceiptItemInput:
+      type: object
+      required: [description, quantity, unitPrice, lineTotal]
+      properties:
+        description:
+          type: string
+        quantity:
+          type: number
+        unitPrice:
+          type: number
+        lineTotal:
+          type: number
+        category:
+          type: ["string", "null"]
+        sku:
+          type: ["string", "null"]
+        isTaxable:
+          type: boolean
+
+    # ── MATCH ─────────────────────────────────────────────────────────────────
+    Match:
+      type: object
+      required: [id, receiptId, bankTransactionId, matchMethod, confirmed, createdAt]
+      properties:
+        id:
+          type: integer
+        receiptId:
+          type: integer
+        bankTransactionId:
+          type: string
+        matchMethod:
+          type: string
+        confidenceScore:
+          type: ["number", "null"]
+        scoreBreakdown:
+          type: ["object", "null"]
+          additionalProperties:
+            type: number
+        confirmed:
+          type: boolean
+        confirmedAt:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+
+    MatchInput:
+      type: object
+      required: [receiptId, bankTransactionId]
+      properties:
+        receiptId:
+          type: integer
+        bankTransactionId:
+          type: string
+
+    MatchUpdate:
+      type: object
+      properties:
+        confirmed:
+          type: boolean
+
+    ReconcileResult:
+      type: object
+      required: [autoMatched, needsReview, unmatched]
+      properties:
+        autoMatched:
+          type: integer
+        needsReview:
+          type: integer
+        unmatched:
+          type: integer
+        matches:
+          type: array
+          items:
+            $ref: "#/components/schemas/Match"
+
+    # ── DASHBOARD ─────────────────────────────────────────────────────────────
+    DashboardSummary:
+      type: object
+      required:
+        - totalReceipts
+        - matchedReceipts
+        - unmatchedReceipts
+        - totalTransactions
+        - unmatchedTransactions
+        - expiringReturns
+        - totalSpendThisMonth
+        - pendingReconciliation
+      properties:
+        totalReceipts:
+          type: integer
+        matchedReceipts:
+          type: integer
+        unmatchedReceipts:
+          type: integer
+        totalTransactions:
+          type: integer
+        unmatchedTransactions:
+          type: integer
+        expiringReturns:
+          type: integer
+        totalSpendThisMonth:
+          type: number
+        pendingReconciliation:
+          type: integer
+
+    CategorySpend:
+      type: object
+      required: [category, total, count]
+      properties:
+        category:
+          type: string
+        total:
+          type: number
+        count:
+          type: integer
