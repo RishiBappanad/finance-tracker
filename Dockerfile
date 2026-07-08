@@ -1,4 +1,5 @@
 FROM node:22-slim AS base
+# Cache bust: 20260708-1
 RUN corepack enable && corepack prepare pnpm@latest --activate
 WORKDIR /app
 
