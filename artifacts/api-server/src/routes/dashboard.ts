@@ -93,10 +93,11 @@ router.get("/summary", async (req, res) => {
 // Returns daily or cumulative spending by category over a date range
 router.get("/spending-over-time", async (req, res) => {
   const userId = req.user!.userId;
-  const { from, to, cumulative } = req.query as {
+  const { from, to, cumulative, accounts: accountFilter } = req.query as {
     from?: string;
     to?: string;
     cumulative?: string;
+    accounts?: string; // comma-separated account names
   };
 
   const today = new Date().toISOString().slice(0, 10);
@@ -104,6 +105,23 @@ router.get("/spending-over-time", async (req, res) => {
   monthAgo.setMonth(monthAgo.getMonth() - 1);
   const fromDate = from ?? monthAgo.toISOString().slice(0, 10);
   const toDate = to ?? today;
+
+  const conditions = [
+    eq(institutions.userId, userId),
+    sql`${bankTransactions.userCategory} IS NOT NULL`,
+    sql`${bankTransactions.amount} > 0`,
+    eq(bankTransactions.ignored, false),
+    gte(bankTransactions.date, fromDate),
+    lte(bankTransactions.date, toDate),
+  ];
+
+  // Filter by account names if provided
+  if (accountFilter) {
+    const accountNames = accountFilter.split(",").map((a) => a.trim()).filter(Boolean);
+    if (accountNames.length > 0) {
+      conditions.push(sql`${accounts.name} IN (${sql.raw(accountNames.map((a) => `'${a.replace(/'/g, "''")}'`).join(","))})`);
+    }
+  }
 
   // Get daily spending per category
   const rows = await db
@@ -115,16 +133,7 @@ router.get("/spending-over-time", async (req, res) => {
     .from(bankTransactions)
     .innerJoin(accounts, eq(bankTransactions.accountId, accounts.id))
     .innerJoin(institutions, eq(accounts.institutionId, institutions.id))
-    .where(
-      and(
-        eq(institutions.userId, userId),
-        sql`${bankTransactions.userCategory} IS NOT NULL`,
-        sql`${bankTransactions.amount} > 0`,
-        eq(bankTransactions.ignored, false),
-        gte(bankTransactions.date, fromDate),
-        lte(bankTransactions.date, toDate)
-      )
-    )
+    .where(and(...conditions))
     .groupBy(bankTransactions.date, bankTransactions.userCategory)
     .orderBy(bankTransactions.date);
 

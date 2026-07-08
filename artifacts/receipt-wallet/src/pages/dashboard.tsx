@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Receipt, Wallet, AlertCircle, ArrowRightLeft, TrendingUp, Building2 } from "lucide-react";
 import { Link } from "wouter";
 import { TransactionRow, type TransactionData } from "@/components/transaction-row";
+import { MultiSelectFilter } from "@/components/multi-select-filter";
 import { useListAccounts } from "@workspace/api-client-react";
 import { API_BASE, authFetch } from "@/lib/api";
 import {
@@ -56,6 +57,9 @@ export default function Dashboard() {
   const [chartData, setChartData] = useState<any[]>([]);
   const [chartCategories, setChartCategories] = useState<string[]>([]);
   const [cumulative, setCumulative] = useState(false);
+  const [filterCategories, setFilterCategories] = useState<string[]>([]);
+  const [filterAccounts, setFilterAccounts] = useState<string[]>([]);
+  const [allChartCategories, setAllChartCategories] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const { data: accounts } = useListAccounts();
 
@@ -78,7 +82,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     fetchChartData();
-  }, [cumulative]);
+  }, [cumulative, filterCategories, filterAccounts]);
 
   async function fetchChartData() {
     try {
@@ -87,6 +91,9 @@ export default function Dashboard() {
         to: new Date().toISOString().slice(0, 10),
         cumulative: cumulative ? "true" : "false",
       });
+      if (filterAccounts.length > 0) {
+        params.set("accounts", filterAccounts.join(","));
+      }
       const res = await authFetch(`${API_BASE}/api/dashboard/spending-over-time?${params}`);
       const rows: SpendingPoint[] = await res.json();
 
@@ -100,12 +107,20 @@ export default function Dashboard() {
         cats.add(row.category);
       }
 
+      const allCats = [...cats].sort();
+      setAllChartCategories(allCats);
+
+      // Apply client-side category filter for the chart lines
+      const visibleCats = filterCategories.length > 0
+        ? allCats.filter((c) => filterCategories.includes(c))
+        : allCats.slice(0, 8);
+
       const pivoted = Object.entries(dateMap)
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([date, vals]) => ({ date: date.slice(5), ...vals })); // Show MM-DD
 
       setChartData(pivoted);
-      setChartCategories([...cats].slice(0, 8)); // Max 8 lines
+      setChartCategories(visibleCats);
     } catch {}
   }
 
@@ -210,6 +225,22 @@ export default function Dashboard() {
           <p className="text-xs text-amber-600 dark:text-amber-400 mb-3">
             ⚠ Pending transactions may take 1–3 days to fully reflect
           </p>
+          <div className="flex flex-wrap gap-2 mb-4">
+            <MultiSelectFilter
+              label="All categories"
+              options={allChartCategories}
+              selected={filterCategories}
+              onChange={setFilterCategories}
+              className="w-[150px]"
+            />
+            <MultiSelectFilter
+              label="All accounts"
+              options={(accounts ?? []).map((a: any) => a.name).filter(Boolean)}
+              selected={filterAccounts}
+              onChange={setFilterAccounts}
+              className="w-[150px]"
+            />
+          </div>
           <div className="h-[280px]">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
