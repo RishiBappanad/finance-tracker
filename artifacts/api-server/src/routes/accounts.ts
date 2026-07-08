@@ -36,7 +36,7 @@ router.post("/create-link-token", async (_req, res) => {
   res.json({ linkToken: data.link_token });
 });
 
-router.get("/", async (_req, res) => {
+router.get("/", async (req, res) => {
   const rows = await db
     .select({
       id: accounts.id,
@@ -51,6 +51,7 @@ router.get("/", async (_req, res) => {
     })
     .from(accounts)
     .leftJoin(institutions, eq(accounts.institutionId, institutions.id))
+    .where(eq(institutions.userId, req.user!.userId))
     .orderBy(accounts.createdAt);
 
   res.json(rows.map((r) => ({ ...r, createdAt: r.createdAt?.toISOString() ?? "" })));
@@ -71,6 +72,7 @@ router.post("/", async (req, res) => {
     .values({
       id: institutionId,
       name: institutionName,
+      userId: req.user!.userId,
       plaidAccessToken: accessToken,
       plaidItemId: itemId,
     })

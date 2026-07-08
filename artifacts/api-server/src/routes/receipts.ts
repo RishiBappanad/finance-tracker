@@ -129,6 +129,7 @@ router.post("/upload", upload.single("file"), async (req, res) => {
   const [row] = await db
     .insert(scannedReceipts)
     .values({
+      userId: req.user!.userId,
       sourceFilePath: filePath,
       ocrEngine: "manual",
       storeName: storeName || null,

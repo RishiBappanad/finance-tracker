@@ -1,15 +1,16 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
 import { userCategories } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 
 const router = Router();
 
-// GET /categories — list all user-created categories
-router.get("/", async (_req, res) => {
+// GET /categories — list user's categories
+router.get("/", async (req, res) => {
   const rows = await db
     .select()
     .from(userCategories)
+    .where(eq(userCategories.userId, req.user!.userId))
     .orderBy(userCategories.name);
 
   res.json(rows.map((r) => ({
@@ -34,7 +35,7 @@ router.post("/", async (req, res) => {
   try {
     const [row] = await db
       .insert(userCategories)
-      .values({ name: trimmedName, color: color || null, icon: icon || null })
+      .values({ userId: req.user!.userId, name: trimmedName, color: color || null, icon: icon || null })
       .returning();
 
     res.status(201).json({
@@ -52,41 +53,12 @@ router.post("/", async (req, res) => {
   }
 });
 
-// PATCH /categories/:id — update a user category
-router.patch("/:id", async (req, res) => {
-  const id = Number(req.params.id);
-  const { name, color, icon } = req.body;
-
-  const updates: Record<string, any> = {};
-  if (name !== undefined) updates.name = name.trim();
-  if (color !== undefined) updates.color = color;
-  if (icon !== undefined) updates.icon = icon;
-
-  if (Object.keys(updates).length === 0) {
-    return void res.status(400).json({ error: "Nothing to update" });
-  }
-
-  const [row] = await db
-    .update(userCategories)
-    .set(updates)
-    .where(eq(userCategories.id, id))
-    .returning();
-
-  if (!row) return void res.status(404).json({ error: "Category not found" });
-
-  res.json({
-    id: row.id,
-    name: row.name,
-    color: row.color,
-    icon: row.icon,
-    createdAt: row.createdAt.toISOString(),
-  });
-});
-
 // DELETE /categories/:id — delete a user category
 router.delete("/:id", async (req, res) => {
   const id = Number(req.params.id);
-  await db.delete(userCategories).where(eq(userCategories.id, id));
+  await db.delete(userCategories).where(
+    and(eq(userCategories.id, id), eq(userCategories.userId, req.user!.userId))
+  );
   res.status(204).send();
 });
 

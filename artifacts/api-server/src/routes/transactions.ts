@@ -92,7 +92,7 @@ router.get("/", async (req, res) => {
   const parsed = ListTransactionsQueryParams.safeParse(req.query);
   const params = parsed.success ? parsed.data : {};
 
-  const conditions = [];
+  const conditions = [eq(institutions.userId, req.user!.userId)];
   if (params.accountId) conditions.push(eq(bankTransactions.accountId, params.accountId));
   if (params.pending != null) conditions.push(eq(bankTransactions.pending, params.pending));
   if (params.from) conditions.push(gte(bankTransactions.date, params.from));
@@ -120,6 +120,7 @@ router.get("/", async (req, res) => {
     })
     .from(bankTransactions)
     .leftJoin(accounts, eq(bankTransactions.accountId, accounts.id))
+    .innerJoin(institutions, eq(accounts.institutionId, institutions.id))
     .where(conditions.length ? and(...conditions) : undefined)
     .orderBy(bankTransactions.date);
 
@@ -132,11 +133,11 @@ router.get("/", async (req, res) => {
   res.json(rows.map((r) => serializeTxn(r, matchMap.get(r.id))));
 });
 
-router.post("/sync", async (_req, res) => {
+router.post("/sync", async (req, res) => {
   const plaid = getPlaidAdapter();
 
-  // Get all institutions with access tokens
-  const allInstitutions = await db.select().from(institutions);
+  // Get all institutions with access tokens for this user
+  const allInstitutions = await db.select().from(institutions).where(eq(institutions.userId, req.user!.userId));
   const institutionMap = new Map(allInstitutions.map((i) => [i.id, i]));
 
   const allAccounts = await db.select().from(accounts);
@@ -346,6 +347,7 @@ router.get("/spending-by-category", async (req, res) => {
     sql`${bankTransactions.userCategory} IS NOT NULL`,
     sql`${bankTransactions.amount} > 0`,
     eq(bankTransactions.ignored, false),
+    eq(institutions.userId, req.user!.userId),
   ];
 
   if (from) conditions.push(gte(bankTransactions.date, from));
@@ -358,6 +360,8 @@ router.get("/spending-by-category", async (req, res) => {
       count: sql<number>`COUNT(*)`,
     })
     .from(bankTransactions)
+    .innerJoin(accounts, eq(bankTransactions.accountId, accounts.id))
+    .innerJoin(institutions, eq(accounts.institutionId, institutions.id))
     .where(and(...conditions))
     .groupBy(bankTransactions.userCategory);
 
@@ -378,6 +382,7 @@ router.get("/earnings-by-category", async (req, res) => {
     sql`${bankTransactions.userCategory} IS NOT NULL`,
     sql`${bankTransactions.amount} < 0`,
     eq(bankTransactions.ignored, false),
+    eq(institutions.userId, req.user!.userId),
   ];
 
   if (from) conditions.push(gte(bankTransactions.date, from));
@@ -390,6 +395,8 @@ router.get("/earnings-by-category", async (req, res) => {
       count: sql<number>`COUNT(*)`,
     })
     .from(bankTransactions)
+    .innerJoin(accounts, eq(bankTransactions.accountId, accounts.id))
+    .innerJoin(institutions, eq(accounts.institutionId, institutions.id))
     .where(and(...conditions))
     .groupBy(bankTransactions.userCategory);
 

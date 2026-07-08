@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Receipt, Wallet, AlertCircle, ArrowRightLeft, TrendingUp, Building2 } from "lucide-react";
 import { Link } from "wouter";
 import { TransactionRow, type TransactionData } from "@/components/transaction-row";
-import { API_BASE } from "@/lib/api";
+import { API_BASE, authFetch } from "@/lib/api";
 import { useListAccounts } from "@workspace/api-client-react";
 
 interface DashboardSummary {
@@ -36,8 +36,8 @@ export default function Dashboard() {
     async function fetchDashboard() {
       try {
         const [summaryRes, txnRes] = await Promise.all([
-          fetch(`${API_BASE}/api/dashboard/summary`),
-          fetch(`${API_BASE}/api/transactions?from=` + getMonthAgo()),
+          authFetch(`${API_BASE}/api/dashboard/summary`),
+          authFetch(`${API_BASE}/api/transactions?from=` + getMonthAgo()),
         ]);
         const summaryData = await summaryRes.json();
         const txnData: TransactionData[] = await txnRes.json();

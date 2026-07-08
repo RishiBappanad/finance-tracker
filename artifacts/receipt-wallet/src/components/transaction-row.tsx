@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { CheckCircle2, EyeOff, Eye } from "lucide-react";
-import { API_BASE } from "@/lib/api";
+import { API_BASE, authFetch } from "@/lib/api";
 import {
   Select,
   SelectContent,
@@ -52,7 +52,7 @@ async function getCategories(): Promise<string[]> {
   }
   _categoriesFetching = true;
   try {
-    const res = await fetch(`${API_BASE}/api/transactions/categories`);
+    const res = await authFetch(`${API_BASE}/api/transactions/categories`);
     const cats = await res.json();
     _categoriesCache = cats;
     _categoryListeners.forEach((cb) => cb(cats));
@@ -121,7 +121,7 @@ export function TransactionRow({
   const handleCategoryChange = async (category: string) => {
     setLocalCategory(category);
     try {
-      await fetch(`${API_BASE}/api/transactions/${txn.id}`, {
+      await authFetch(`${API_BASE}/api/transactions/${txn.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ userCategory: category }),
@@ -139,7 +139,7 @@ export function TransactionRow({
   const handleBulkAssign = async () => {
     if (!bulkDialog) return;
     try {
-      await fetch(`${API_BASE}/api/transactions/bulk-categorize`, {
+      await authFetch(`${API_BASE}/api/transactions/bulk-categorize`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

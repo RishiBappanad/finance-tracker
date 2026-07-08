@@ -18,7 +18,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { TransactionRow, invalidateCategoriesCache, type TransactionData } from "@/components/transaction-row";
-import { API_BASE } from "@/lib/api";
+import { API_BASE, authFetch } from "@/lib/api";
 import { useListTransactions, syncTransactions } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
@@ -60,11 +60,11 @@ export default function Transactions() {
 
   // Fetch filter options
   useEffect(() => {
-    fetch(`${API_BASE}/api/transactions/vendors`)
+    authFetch(`${API_BASE}/api/transactions/vendors`)
       .then((r) => r.json())
       .then(setVendors)
       .catch(() => {});
-    fetch(`${API_BASE}/api/transactions/categories`)
+    authFetch(`${API_BASE}/api/transactions/categories`)
       .then((r) => r.json())
       .then(setCategories)
       .catch(() => {});
@@ -73,7 +73,7 @@ export default function Transactions() {
   // Fetch hidden transactions when toggle is on
   useEffect(() => {
     if (showHidden) {
-      fetch(`${API_BASE}/api/transactions/ignored`)
+      authFetch(`${API_BASE}/api/transactions/ignored`)
         .then((r) => r.json())
         .then(setHiddenTxns)
         .catch(() => {});
@@ -153,7 +153,7 @@ export default function Transactions() {
         title: "Sync complete",
         description: `Added ${result.added} transactions, updated ${result.updated}, removed ${result.removed}.`,
       });
-      fetch(`${API_BASE}/api/transactions/vendors`)
+      authFetch(`${API_BASE}/api/transactions/vendors`)
         .then((r) => r.json())
         .then(setVendors)
         .catch(() => {});
@@ -167,7 +167,7 @@ export default function Transactions() {
   const handleCreateCategory = async () => {
     if (!newCategoryName.trim()) return;
     try {
-      const res = await fetch(`${API_BASE}/api/categories`, {
+      const res = await authFetch(`${API_BASE}/api/categories`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: newCategoryName.trim() }),
@@ -181,7 +181,7 @@ export default function Transactions() {
       setNewCategoryName("");
       setDialogOpen(false);
       invalidateCategoriesCache();
-      fetch(`${API_BASE}/api/transactions/categories`)
+      authFetch(`${API_BASE}/api/transactions/categories`)
         .then((r) => r.json())
         .then(setCategories)
         .catch(() => {});
@@ -191,7 +191,7 @@ export default function Transactions() {
   };
 
   const handleUnignore = async (id: string) => {
-    await fetch(`${API_BASE}/api/transactions/${id}`, {
+    await authFetch(`${API_BASE}/api/transactions/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ignored: false }),

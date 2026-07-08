@@ -1,7 +1,9 @@
 import { pgTable, serial, text, real, integer, timestamp, date } from "drizzle-orm/pg-core";
+import { users } from "./users";
 
 export const scannedReceipts = pgTable("scanned_receipts", {
   id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id),
   sourceFilePath: text("source_file_path").notNull(),
   sourceFileHash: text("source_file_hash").unique(),
   ocrEngine: text("ocr_engine").notNull().default("tesseract"),

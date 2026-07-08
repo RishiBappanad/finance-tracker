@@ -1,7 +1,9 @@
-import { pgTable, text, timestamp } from "drizzle-orm/pg-core";
+import { pgTable, text, integer, timestamp } from "drizzle-orm/pg-core";
+import { users } from "./users";
 
 export const institutions = pgTable("institutions", {
   id: text("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id),
   name: text("name").notNull(),
   plaidAccessToken: text("plaid_access_token"),
   plaidItemId: text("plaid_item_id"),

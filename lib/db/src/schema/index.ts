@@ -1,3 +1,4 @@
+export * from "./users";
 export * from "./institutions";
 export * from "./accounts";
 export * from "./bank_transactions";
