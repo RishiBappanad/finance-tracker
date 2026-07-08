@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Receipt, Wallet, AlertCircle, ArrowRightLeft, TrendingUp, Building2 } from "lucide-react";
 import { Link } from "wouter";
+import { Input } from "@/components/ui/input";
 import { TransactionRow, type TransactionData } from "@/components/transaction-row";
 import { MultiSelectFilter } from "@/components/multi-select-filter";
 import { useListAccounts } from "@workspace/api-client-react";
@@ -60,6 +61,8 @@ export default function Dashboard() {
   const [filterCategories, setFilterCategories] = useState<string[]>([]);
   const [filterAccounts, setFilterAccounts] = useState<string[]>([]);
   const [allChartCategories, setAllChartCategories] = useState<string[]>([]);
+  const [chartFrom, setChartFrom] = useState(getMonthAgo());
+  const [chartTo, setChartTo] = useState(new Date().toISOString().slice(0, 10));
   const [isLoading, setIsLoading] = useState(true);
   const { data: accounts } = useListAccounts();
 
@@ -84,13 +87,13 @@ export default function Dashboard() {
 
   useEffect(() => {
     fetchChartData();
-  }, [cumulative, filterCategories, filterAccounts]);
+  }, [cumulative, filterCategories, filterAccounts, chartFrom, chartTo]);
 
   async function fetchChartData() {
     try {
       const params = new URLSearchParams({
-        from: getMonthAgo(),
-        to: new Date().toISOString().slice(0, 10),
+        from: chartFrom,
+        to: chartTo,
         cumulative: cumulative ? "true" : "false",
       });
       if (filterAccounts.length > 0) {
@@ -204,10 +207,9 @@ export default function Dashboard() {
       {/* Spending Over Time Chart */}
       {chartData.length > 0 && (
         <Card className="border-none shadow-sm p-6">
-          <div className="flex items-center justify-between mb-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
             <div>
               <h2 className="font-semibold tracking-tight">Spending Over Time</h2>
-              <p className="text-xs text-muted-foreground mt-0.5">Last 30 days by category</p>
             </div>
             <div className="flex items-center gap-1 p-1 bg-secondary/40 rounded-lg">
               <button
@@ -222,6 +224,44 @@ export default function Dashboard() {
               >
                 Cumulative
               </button>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-3 mb-4">
+            <Input
+              type="date"
+              value={chartFrom}
+              onChange={(e) => setChartFrom(e.target.value)}
+              className="w-auto h-8 text-xs bg-secondary/30 border-transparent"
+            />
+            <span className="text-xs text-muted-foreground">to</span>
+            <Input
+              type="date"
+              value={chartTo}
+              onChange={(e) => setChartTo(e.target.value)}
+              className="w-auto h-8 text-xs bg-secondary/30 border-transparent"
+            />
+            <div className="flex gap-1">
+              {[
+                { label: "1W", days: 7 },
+                { label: "1M", days: 30 },
+                { label: "3M", days: 90 },
+                { label: "6M", days: 180 },
+                { label: "1Y", days: 365 },
+              ].map(({ label, days }) => (
+                <button
+                  key={label}
+                  className="px-2 py-1 rounded text-xs text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-colors"
+                  onClick={() => {
+                    const to = new Date();
+                    const from = new Date();
+                    from.setDate(from.getDate() - days);
+                    setChartFrom(from.toISOString().slice(0, 10));
+                    setChartTo(to.toISOString().slice(0, 10));
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
             </div>
           </div>
           <p className="text-xs text-amber-600 dark:text-amber-400 mb-3">
