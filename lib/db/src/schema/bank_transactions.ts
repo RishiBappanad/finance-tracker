@@ -12,6 +12,8 @@ export const bankTransactions = pgTable("bank_transactions", {
   merchantNameRaw: text("merchant_name_raw"),
   categoryPrimary: text("category_primary"),
   categoryDetail: text("category_detail"),
+  userCategory: text("user_category"),
+  ignored: boolean("ignored").notNull().default(false),
   date: date("date").notNull(),
   pending: boolean("pending").notNull().default(false),
   plaidSyncedAt: timestamp("plaid_synced_at").notNull().defaultNow(),

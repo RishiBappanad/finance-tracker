@@ -1,4 +1,7 @@
 import { Router } from "express";
+import multer from "multer";
+import path from "path";
+import { mkdirSync } from "fs";
 import { db } from "@workspace/db";
 import { scannedReceipts, receiptItems, receiptTransactionMatches } from "@workspace/db";
 import { eq, and, gte, lte, like, sql } from "drizzle-orm";
@@ -9,6 +12,19 @@ import {
   ListReceiptsQueryParams,
   ListExpiringReceiptsQueryParams,
 } from "@workspace/api-zod";
+
+// Ensure uploads directory exists
+const uploadsDir = path.resolve(process.cwd(), "uploads");
+mkdirSync(uploadsDir, { recursive: true });
+
+const storage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, uploadsDir),
+  filename: (_req, file, cb) => {
+    const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+    cb(null, `${uniqueSuffix}-${file.originalname}`);
+  },
+});
+const upload = multer({ storage, limits: { fileSize: 20 * 1024 * 1024 } }); // 20MB max
 
 const router = Router();
 
@@ -100,6 +116,30 @@ router.get("/", async (req, res) => {
 
   const mm = await getMatchMap(rows.map((r) => r.id));
   res.json(rows.map((r) => serializeReceipt(r, mm.get(r.id))));
+});
+
+router.post("/upload", upload.single("file"), async (req, res) => {
+  if (!req.file) {
+    return void res.status(400).json({ error: "No file provided" });
+  }
+
+  const filePath = `/uploads/${req.file.filename}`;
+  const { storeName, purchaseDate, total, notes } = req.body;
+
+  const [row] = await db
+    .insert(scannedReceipts)
+    .values({
+      sourceFilePath: filePath,
+      ocrEngine: "manual",
+      storeName: storeName || null,
+      purchaseDate: purchaseDate || null,
+      total: total ? parseFloat(total) : null,
+      notes: notes || null,
+      processingStatus: "completed",
+    })
+    .returning();
+
+  res.status(201).json(serializeReceipt(row));
 });
 
 router.post("/", async (req, res) => {

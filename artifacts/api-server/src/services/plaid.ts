@@ -25,6 +25,7 @@ export interface SyncResult {
   added: PlaidTransaction[];
   modified: PlaidTransaction[];
   removed: string[]; // transaction IDs
+  hasMore: boolean;
 }
 
 export interface PlaidAdapter {
@@ -98,6 +99,7 @@ const livePlaidAdapter: PlaidAdapter = {
       added: (data.added ?? []).map(mapTxn),
       modified: (data.modified ?? []).map(mapTxn),
       removed: (data.removed ?? []).map((r: any) => r.transaction_id),
+      hasMore: data.has_more ?? false,
       nextCursor: data.next_cursor ?? "",
     };
   },
@@ -113,7 +115,7 @@ const mockPlaidAdapter: PlaidAdapter = {
     return [];
   },
   async syncTransactions(_accessToken: string) {
-    return { added: [], modified: [], removed: [], nextCursor: "" };
+    return { added: [], modified: [], removed: [], hasMore: false, nextCursor: "" };
   },
 };
 

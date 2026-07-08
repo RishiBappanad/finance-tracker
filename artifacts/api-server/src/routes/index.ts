@@ -5,6 +5,7 @@ import transactionsRouter from "./transactions.js";
 import receiptsRouter from "./receipts.js";
 import matchesRouter from "./matches.js";
 import dashboardRouter from "./dashboard.js";
+import categoriesRouter from "./categories.js";
 
 const router: IRouter = Router();
 
@@ -15,5 +16,6 @@ router.use("/receipts", receiptsRouter);
 router.use("/reconcile", matchesRouter);
 router.use("/matches", matchesRouter);
 router.use("/dashboard", dashboardRouter);
+router.use("/categories", categoriesRouter);
 
 export default router;

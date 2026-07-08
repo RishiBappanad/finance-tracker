@@ -51,7 +51,7 @@ router.post("/run", async (_req, res) => {
     id: t.id,
     amount: t.amount,
     date: t.date,
-    merchantName: t.merchantName ?? null,
+    merchantName: t.merchantName ?? t.merchantNameRaw ?? null,
   }));
 
   let autoMatched = 0;

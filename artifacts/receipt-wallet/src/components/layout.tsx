@@ -6,6 +6,7 @@ import {
   ArrowLeftRight, 
   Building2,
   Wallet,
+  PieChart,
   Settings
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -21,6 +22,7 @@ export function Layout({ children }: LayoutProps) {
     { href: "/", label: "Dashboard", icon: LayoutDashboard },
     { href: "/receipts", label: "Receipts", icon: Receipt },
     { href: "/transactions", label: "Transactions", icon: ArrowLeftRight },
+    { href: "/spending", label: "Cash Flow", icon: PieChart },
     { href: "/reconcile", label: "Reconcile", icon: Wallet },
     { href: "/accounts", label: "Accounts", icon: Building2 },
   ];

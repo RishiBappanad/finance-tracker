@@ -9,6 +9,7 @@ import ReceiptDetail from "@/pages/receipts/detail";
 import Transactions from "@/pages/transactions/index";
 import Reconcile from "@/pages/reconcile/index";
 import Accounts from "@/pages/accounts/index";
+import Spending from "@/pages/spending/index";
 import NotFound from "@/pages/not-found";
 
 const queryClient = new QueryClient();
@@ -22,6 +23,7 @@ function Router() {
         <Route path="/receipts/:id" component={ReceiptDetail} />
         <Route path="/transactions" component={Transactions} />
         <Route path="/reconcile" component={Reconcile} />
+        <Route path="/spending" component={Spending} />
         <Route path="/accounts" component={Accounts} />
         <Route component={NotFound} />
       </Switch>
