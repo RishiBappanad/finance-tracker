@@ -5,6 +5,7 @@ import { Link } from "wouter";
 import { FileText, Plus, Search, Camera, Upload, Loader2 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { useListReceipts } from "@workspace/api-client-react";
+import { API_BASE } from "@/lib/api";
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 
@@ -25,7 +26,7 @@ export default function Receipts() {
       const formData = new FormData();
       formData.append("file", file);
 
-      const res = await fetch("http://localhost:5001/api/receipts/upload", {
+      const res = await fetch(`${API_BASE}/api/receipts/upload`, {
         method: "POST",
         body: formData,
       });

@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Building2, Link as LinkIcon, Plus, Loader2, Trash2 } from "lucide-react";
 import { useListAccounts, createAccount, deleteAccount } from "@workspace/api-client-react";
+import { API_BASE } from "@/lib/api";
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 
@@ -17,7 +18,7 @@ export default function Accounts() {
   // Fetch a link token from the server
   const fetchLinkToken = useCallback(async () => {
     try {
-      const res = await fetch("http://localhost:5001/api/accounts/create-link-token", {
+      const res = await fetch(`${API_BASE}/api/accounts/create-link-token`, {
         method: "POST",
       });
       const data = await res.json();

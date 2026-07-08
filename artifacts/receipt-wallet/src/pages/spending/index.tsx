@@ -12,6 +12,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { TransactionRow, type TransactionData } from "@/components/transaction-row";
+import { API_BASE } from "@/lib/api";
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 
@@ -75,7 +76,7 @@ export default function CashFlow() {
     setIsLoading(true);
     try {
       const params = new URLSearchParams({ from: fromDate, to: toDate });
-      const res = await fetch(`http://localhost:5001${endpoint}?${params}`);
+      const res = await fetch(`${API_BASE}${endpoint}?${params}`);
       setData(await res.json());
     } catch {
       toast({ title: "Error", description: "Could not load data", variant: "destructive" });
@@ -87,7 +88,7 @@ export default function CashFlow() {
   const fetchTransactionsForCategory = async (category: string) => {
     try {
       const params = new URLSearchParams({ from: fromDate, to: toDate });
-      const res = await fetch(`http://localhost:5001/api/transactions?${params}`);
+      const res = await fetch(`${API_BASE}/api/transactions?${params}`);
       const json: TransactionData[] = await res.json();
       // Filter by category and direction
       setTransactions(
@@ -104,7 +105,7 @@ export default function CashFlow() {
   const handleCategorize = async () => {
     setIsCategorizing(true);
     try {
-      const res = await fetch("http://localhost:5001/api/transactions/categorize", { method: "POST" });
+      const res = await fetch(`${API_BASE}/api/transactions/categorize`, { method: "POST" });
       const result = await res.json();
       toast({
         title: "Categorization complete",
@@ -121,7 +122,7 @@ export default function CashFlow() {
 
   const handleIgnore = async (txnId: string, ignored: boolean) => {
     try {
-      await fetch(`http://localhost:5001/api/transactions/${txnId}`, {
+      await fetch(`${API_BASE}/api/transactions/${txnId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ignored }),
