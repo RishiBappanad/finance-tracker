@@ -17,9 +17,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { MultiSelectFilter } from "@/components/multi-select-filter";
 import { TransactionRow, invalidateCategoriesCache, type TransactionData } from "@/components/transaction-row";
 import { API_BASE, authFetch } from "@/lib/api";
-import { useListTransactions, syncTransactions } from "@workspace/api-client-react";
+import { useListTransactions, useListAccounts, syncTransactions } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 
@@ -39,13 +40,15 @@ export default function Transactions() {
   // Filters
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
-  const [filterCategory, setFilterCategory] = useState("");
-  const [filterVendor, setFilterVendor] = useState("");
+  const [filterCategories, setFilterCategories] = useState<string[]>([]);
+  const [filterVendors, setFilterVendors] = useState<string[]>([]);
+  const [filterAccounts, setFilterAccounts] = useState<string[]>([]);
   const [showFilters, setShowFilters] = useState(false);
 
   // Dynamic filter options
   const [vendors, setVendors] = useState<string[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
+  const { data: accountsList } = useListAccounts();
 
   const { data: transactions, isLoading } = useListTransactions(
     {
@@ -84,13 +87,18 @@ export default function Transactions() {
   const filtered = useMemo(() => {
     let list = [...(transactions ?? [])];
 
-    if (filterCategory) {
-      list = list.filter((t: any) => t.userCategory === filterCategory);
+    if (filterCategories.length > 0) {
+      list = list.filter((t: any) => filterCategories.includes(t.userCategory));
     }
-    if (filterVendor) {
+    if (filterVendors.length > 0) {
       list = list.filter((t: any) =>
-        (t.merchantName || t.merchantNameRaw || "").toLowerCase() === filterVendor.toLowerCase()
+        filterVendors.some((v) =>
+          (t.merchantName || t.merchantNameRaw || "").toLowerCase() === v.toLowerCase()
+        )
       );
+    }
+    if (filterAccounts.length > 0) {
+      list = list.filter((t: any) => filterAccounts.includes(t.accountName));
     }
 
     switch (sort) {
@@ -117,7 +125,7 @@ export default function Transactions() {
     }
 
     return list;
-  }, [transactions, filterCategory, filterVendor, sort]);
+  }, [transactions, filterCategories, filterVendors, filterAccounts, sort]);
 
   // Lazy loading — show more on scroll
   const visibleTransactions = useMemo(() => filtered.slice(0, visibleCount), [filtered, visibleCount]);
@@ -133,15 +141,16 @@ export default function Transactions() {
   // Reset visible count when filters change
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);
-  }, [search, fromDate, toDate, filterCategory, filterVendor, sort]);
+  }, [search, fromDate, toDate, filterCategories, filterVendors, filterAccounts, sort]);
 
-  const hasActiveFilters = !!(fromDate || toDate || filterCategory || filterVendor);
+  const hasActiveFilters = !!(fromDate || toDate || filterCategories.length || filterVendors.length || filterAccounts.length);
 
   const clearFilters = () => {
     setFromDate("");
     setToDate("");
-    setFilterCategory("");
-    setFilterVendor("");
+    setFilterCategories([]);
+    setFilterVendors([]);
+    setFilterAccounts([]);
   };
 
   const handleSync = async () => {
@@ -279,7 +288,7 @@ export default function Transactions() {
               Filters
               {hasActiveFilters && (
                 <span className="ml-1.5 h-4 w-4 rounded-full bg-primary text-primary-foreground text-[10px] flex items-center justify-center">
-                  {[fromDate, toDate, filterCategory, filterVendor].filter(Boolean).length}
+                  {[fromDate, toDate, filterCategories.length, filterVendors.length, filterAccounts.length].filter(Boolean).length}
                 </span>
               )}
             </Button>
@@ -315,28 +324,27 @@ export default function Transactions() {
                   className="w-auto h-8 text-xs bg-secondary/30 border-transparent"
                 />
               </div>
-              <Select value={filterCategory || "__all__"} onValueChange={(v) => setFilterCategory(v === "__all__" ? "" : v)}>
-                <SelectTrigger className="w-[160px] h-8 text-xs bg-secondary/30 border-transparent">
-                  <SelectValue placeholder="All categories" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__all__" className="text-xs">All categories</SelectItem>
-                  {categories.map((cat) => (
-                    <SelectItem key={cat} value={cat} className="text-xs">{cat}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Select value={filterVendor || "__all__"} onValueChange={(v) => setFilterVendor(v === "__all__" ? "" : v)}>
-                <SelectTrigger className="w-[180px] h-8 text-xs bg-secondary/30 border-transparent">
-                  <SelectValue placeholder="All vendors" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__all__" className="text-xs">All vendors</SelectItem>
-                  {vendors.map((v) => (
-                    <SelectItem key={v} value={v} className="text-xs">{v}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <MultiSelectFilter
+                label="All categories"
+                options={categories}
+                selected={filterCategories}
+                onChange={setFilterCategories}
+                className="w-[160px]"
+              />
+              <MultiSelectFilter
+                label="All vendors"
+                options={vendors}
+                selected={filterVendors}
+                onChange={setFilterVendors}
+                className="w-[160px]"
+              />
+              <MultiSelectFilter
+                label="All accounts"
+                options={(accountsList ?? []).map((a: any) => a.name).filter(Boolean)}
+                selected={filterAccounts}
+                onChange={setFilterAccounts}
+                className="w-[160px]"
+              />
               {hasActiveFilters && (
                 <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={clearFilters}>
                   <X className="h-3 w-3 mr-1" />
