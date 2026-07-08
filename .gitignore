@@ -36,3 +36,6 @@ Thumbs.db
 
 # Database exports (contain access tokens)
 db-export.sql
+
+# Upload directory
+uploads/

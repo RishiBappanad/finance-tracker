@@ -1,5 +1,4 @@
 lockfileVersion: '9.0'
-# cache-bust: 20260708-1406
 
 settings:
   autoInstallPeers: false
@@ -66,12 +65,33 @@ importers:
 
   .:
     devDependencies:
+      '@types/bcryptjs':
+        specifier: ^3.0.0
+        version: 3.0.0
+      '@types/jsonwebtoken':
+        specifier: ^9.0.10
+        version: 9.0.10
+      '@types/supertest':
+        specifier: ^7.2.0
+        version: 7.2.0
+      bcryptjs:
+        specifier: ^3.0.3
+        version: 3.0.3
+      jsonwebtoken:
+        specifier: ^9.0.3
+        version: 9.0.3
       prettier:
         specifier: ^3.8.4
         version: 3.8.4
+      supertest:
+        specifier: ^7.2.2
+        version: 7.2.2
       typescript:
         specifier: ~5.9.3
         version: 5.9.3
+      vitest:
+        specifier: ^4.1.9
+        version: 4.1.9(@types/node@25.9.4)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.22.4)(yaml@2.9.0)
 
   artifacts/api-server:
     dependencies:

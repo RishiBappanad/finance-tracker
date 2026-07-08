@@ -1,5 +1,7 @@
-// API base URL — empty in production (same origin), localhost in dev
-export const API_BASE = import.meta.env.DEV ? "http://localhost:5001" : "";
+// API base URL — controlled by VITE_API_BASE env var at build time.
+// Standalone domain: leave unset (defaults to "")
+// Behind proxy: set VITE_API_BASE=/finance
+export const API_BASE = import.meta.env.VITE_API_BASE ?? (import.meta.env.DEV ? "http://localhost:5001" : "");
 
 const TOKEN_KEY = "auth_token";
 
