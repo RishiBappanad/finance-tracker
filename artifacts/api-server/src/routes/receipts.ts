@@ -12,6 +12,7 @@ import {
   ListReceiptsQueryParams,
   ListExpiringReceiptsQueryParams,
 } from "@workspace/api-zod";
+import { processReceipt } from "../services/receipt-ocr.js";
 
 // Ensure uploads directory exists
 const uploadsDir = path.resolve(process.cwd(), "uploads");
@@ -141,6 +142,98 @@ router.post("/upload", upload.single("file"), async (req, res) => {
     .returning();
 
   res.status(201).json(serializeReceipt(row));
+});
+
+// POST /receipts/scan — upload + OCR extract, returns data for user verification (does NOT save)
+router.post("/scan", upload.single("file"), async (req, res) => {
+  if (!req.file) {
+    return void res.status(400).json({ error: "No file provided" });
+  }
+
+  const filePath = `uploads/${req.file.filename}`;
+
+  try {
+    const extraction = await processReceipt(filePath);
+    res.json({
+      filePath: `/uploads/${req.file.filename}`,
+      extraction,
+    });
+  } catch (e: any) {
+    // Even if OCR completely explodes, return a graceful response
+    res.json({
+      filePath: `/uploads/${req.file.filename}`,
+      extraction: {
+        status: "manual_required",
+        engine: "gemini",
+        confidence: 0,
+        storeName: null,
+        storeAddress: null,
+        purchaseDate: null,
+        subtotal: null,
+        tax: null,
+        total: null,
+        paymentMethod: null,
+        items: [],
+        rawResponse: null,
+        error: `Processing failed: ${e.message}`,
+      },
+    });
+  }
+});
+
+// POST /receipts/confirm — user confirms extracted data, saves receipt + items
+router.post("/confirm", async (req, res) => {
+  const { filePath, storeName, storeAddress, purchaseDate, subtotal, tax, total, paymentMethod, returnWindowDays, notes, items } = req.body;
+
+  if (!filePath) {
+    return void res.status(400).json({ error: "filePath is required" });
+  }
+
+  let returnDeadline: string | null = null;
+  if (purchaseDate && returnWindowDays) {
+    const d = new Date(purchaseDate);
+    d.setDate(d.getDate() + returnWindowDays);
+    returnDeadline = d.toISOString().slice(0, 10);
+  }
+
+  const [receipt] = await db
+    .insert(scannedReceipts)
+    .values({
+      userId: req.user!.userId,
+      sourceFilePath: filePath,
+      ocrEngine: "gemini",
+      storeName: storeName || null,
+      storeAddress: storeAddress || null,
+      purchaseDate: purchaseDate || null,
+      subtotal: subtotal != null ? Number(subtotal) : null,
+      tax: tax != null ? Number(tax) : null,
+      total: total != null ? Number(total) : null,
+      paymentMethod: paymentMethod || null,
+      returnWindowDays: returnWindowDays || null,
+      returnDeadline,
+      notes: notes || null,
+      processingStatus: "completed",
+      ocrConfidence: 1.0, // User verified
+    })
+    .returning();
+
+  // Save items if provided
+  if (items && Array.isArray(items) && items.length > 0) {
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      await db.insert(receiptItems).values({
+        receiptId: receipt.id,
+        description: item.description || "Unknown item",
+        quantity: Number(item.quantity) || 1,
+        unitPrice: Number(item.unitPrice) || 0,
+        lineTotal: Number(item.lineTotal) || 0,
+        category: item.category || null,
+        sortOrder: i,
+      });
+    }
+  }
+
+  res.status(201).json(serializeReceipt(receipt));
 });
 
 router.post("/", async (req, res) => {

@@ -137,7 +137,15 @@ router.post("/sync", async (req, res) => {
   const plaid = getPlaidAdapter();
 
   // Get all institutions with access tokens for this user
-  const allInstitutions = await db.select().from(institutions).where(eq(institutions.userId, req.user!.userId));
+  let allInstitutions;
+  try {
+    allInstitutions = await db.select().from(institutions).where(eq(institutions.userId, req.user!.userId));
+  } catch (e: any) {
+    return void res.status(503).json({
+      error: "Database unavailable",
+      details: "Could not fetch account information. Please try again.",
+    });
+  }
   const institutionMap = new Map(allInstitutions.map((i) => [i.id, i]));
 
   const allAccounts = await db.select().from(accounts);
@@ -146,6 +154,7 @@ router.post("/sync", async (req, res) => {
   let totalModified = 0;
   let totalRemoved = 0;
   const processedInstitutions = new Set<string>();
+  const errors: Array<{ institution: string; error: string }> = [];
 
   for (const account of allAccounts) {
     const institution = institutionMap.get(account.institutionId);
@@ -215,12 +224,16 @@ router.post("/sync", async (req, res) => {
         }
       }
     } catch (e: any) {
-      // Log but don't fail the whole sync
+      // Per-institution failures are non-fatal — collect and report
+      errors.push({
+        institution: institution.name ?? institution.id,
+        error: e?.message ?? "Sync failed",
+      });
       console.error(`Sync failed for institution ${institution.id}:`, e?.message ?? e);
     }
   }
 
-  res.json({ added: totalAdded, removed: totalRemoved, updated: totalModified, accounts: allAccounts.length });
+  res.json({ added: totalAdded, removed: totalRemoved, updated: totalModified, accounts: allAccounts.length, errors });
 });
 
 // GET /transactions/vendors — list distinct merchant names
