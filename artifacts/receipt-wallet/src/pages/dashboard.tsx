@@ -73,7 +73,9 @@ export default function Dashboard() {
         const summaryData = await summaryRes.json();
         const txnData: TransactionData[] = await txnRes.json();
         setSummary(summaryData);
-        setRecentTxns(txnData.slice(-8).reverse());
+        // Sort by date descending to get most recent first
+        txnData.sort((a, b) => b.date.localeCompare(a.date));
+        setRecentTxns(txnData.slice(0, 8));
       } catch {}
       finally { setIsLoading(false); }
     }

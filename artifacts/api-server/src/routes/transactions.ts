@@ -426,6 +426,22 @@ router.get("/earnings-by-category", async (req, res) => {
 router.patch("/:transactionId", async (req, res) => {
   const { userCategory, ignored } = req.body;
 
+  // Verify the transaction belongs to this user
+  const ownership = await db
+    .select({ id: bankTransactions.id })
+    .from(bankTransactions)
+    .innerJoin(accounts, eq(bankTransactions.accountId, accounts.id))
+    .innerJoin(institutions, eq(accounts.institutionId, institutions.id))
+    .where(and(
+      eq(bankTransactions.id, req.params.transactionId),
+      eq(institutions.userId, req.user!.userId)
+    ))
+    .limit(1);
+
+  if (!ownership.length) {
+    return void res.status(404).json({ error: "Transaction not found" });
+  }
+
   const updates: Record<string, any> = {};
 
   if (userCategory !== undefined) {
@@ -465,9 +481,30 @@ router.patch("/:transactionId", async (req, res) => {
 
 router.get("/:transactionId", async (req, res) => {
   const rows = await db
-    .select()
+    .select({
+      id: bankTransactions.id,
+      accountId: bankTransactions.accountId,
+      accountName: accounts.name,
+      accountMask: accounts.mask,
+      amount: bankTransactions.amount,
+      currency: bankTransactions.currency,
+      merchantName: bankTransactions.merchantName,
+      merchantNameRaw: bankTransactions.merchantNameRaw,
+      categoryPrimary: bankTransactions.categoryPrimary,
+      categoryDetail: bankTransactions.categoryDetail,
+      userCategory: bankTransactions.userCategory,
+      ignored: bankTransactions.ignored,
+      date: bankTransactions.date,
+      pending: bankTransactions.pending,
+      createdAt: bankTransactions.createdAt,
+    })
     .from(bankTransactions)
-    .where(eq(bankTransactions.id, req.params.transactionId))
+    .innerJoin(accounts, eq(bankTransactions.accountId, accounts.id))
+    .innerJoin(institutions, eq(accounts.institutionId, institutions.id))
+    .where(and(
+      eq(bankTransactions.id, req.params.transactionId),
+      eq(institutions.userId, req.user!.userId)
+    ))
     .limit(1);
 
   if (!rows.length) return void res.status(404).json({ error: "Transaction not found" });
