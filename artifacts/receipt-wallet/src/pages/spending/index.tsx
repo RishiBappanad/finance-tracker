@@ -11,6 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { MultiSelectFilter } from "@/components/multi-select-filter";
 import { TransactionRow, type TransactionData } from "@/components/transaction-row";
 import { API_BASE, authFetch } from "@/lib/api";
 import { useQueryClient } from "@tanstack/react-query";
@@ -62,6 +63,7 @@ export default function CashFlow() {
   const [data, setData] = useState<CategoryData[] | null>(null);
   const [transactions, setTransactions] = useState<TransactionData[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const [filterCategories, setFilterCategories] = useState<string[]>([]);
   const [drilldownSort, setDrilldownSort] = useState<DrilldownSort>("date-desc");
   const [isLoading, setIsLoading] = useState(false);
   const [isCategorizing, setIsCategorizing] = useState(false);
@@ -167,8 +169,12 @@ export default function CashFlow() {
     }
   }, [transactions, drilldownSort]);
 
-  const total = data?.reduce((sum, d) => sum + d.total, 0) ?? 0;
-  const chartData = data?.filter((d) => d.total > 0).sort((a, b) => b.total - a.total) ?? [];
+  const allCategories = data?.map((d) => d.category) ?? [];
+  const filteredData = filterCategories.length > 0
+    ? data?.filter((d) => filterCategories.includes(d.category))
+    : data;
+  const total = filteredData?.reduce((sum, d) => sum + d.total, 0) ?? 0;
+  const chartData = filteredData?.filter((d) => d.total > 0).sort((a, b) => b.total - a.total) ?? [];
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
@@ -229,6 +235,13 @@ export default function CashFlow() {
             value={toDate}
             onChange={(e) => setToDate(e.target.value)}
             className="w-auto bg-secondary/30 border-transparent"
+          />
+          <MultiSelectFilter
+            label="All categories"
+            options={allCategories}
+            selected={filterCategories}
+            onChange={setFilterCategories}
+            className="w-[160px]"
           />
           <div className="flex gap-2 ml-auto">
             {[
