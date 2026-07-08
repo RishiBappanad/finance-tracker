@@ -5,7 +5,6 @@ import path from "path";
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
-  base: '/finance/',
   resolve: {
     alias: {
       "@": path.resolve(import.meta.dirname, "src"),

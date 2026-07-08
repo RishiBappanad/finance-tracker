@@ -3,14 +3,16 @@ import { db } from "@workspace/db";
 import {
   scannedReceipts,
   bankTransactions,
+  accounts,
+  institutions,
   receiptTransactionMatches,
 } from "@workspace/db";
 import { gte, lte, and, sql, eq } from "drizzle-orm";
-import { GetSpendingByCategoryQueryParams } from "@workspace/api-zod";
 
 const router = Router();
 
-router.get("/summary", async (_req, res) => {
+router.get("/summary", async (req, res) => {
+  const userId = req.user!.userId;
   const today = new Date().toISOString().slice(0, 10);
   const monthStart = today.slice(0, 7) + "-01";
   const twoWeeks = new Date();
@@ -19,21 +21,35 @@ router.get("/summary", async (_req, res) => {
 
   const [totalReceiptsRow] = await db
     .select({ count: sql<number>`count(*)::int` })
-    .from(scannedReceipts);
+    .from(scannedReceipts)
+    .where(eq(scannedReceipts.userId, userId));
 
   const [matchedReceiptsRow] = await db
     .select({ count: sql<number>`count(distinct ${receiptTransactionMatches.receiptId})::int` })
-    .from(receiptTransactionMatches);
+    .from(receiptTransactionMatches)
+    .innerJoin(scannedReceipts, eq(receiptTransactionMatches.receiptId, scannedReceipts.id))
+    .where(eq(scannedReceipts.userId, userId));
 
   const [totalTxnRow] = await db
     .select({ count: sql<number>`count(*)::int` })
-    .from(bankTransactions);
-
-  const [unmatchedTxnRow] = await db
-    .select({ count: sql<number>`count(*)::int` })
     .from(bankTransactions)
+    .innerJoin(accounts, eq(bankTransactions.accountId, accounts.id))
+    .innerJoin(institutions, eq(accounts.institutionId, institutions.id))
+    .where(eq(institutions.userId, userId));
+
+  const [spendRow] = await db
+    .select({ total: sql<number>`coalesce(sum(${bankTransactions.amount}), 0)::float` })
+    .from(bankTransactions)
+    .innerJoin(accounts, eq(bankTransactions.accountId, accounts.id))
+    .innerJoin(institutions, eq(accounts.institutionId, institutions.id))
     .where(
-      sql`${bankTransactions.id} NOT IN (SELECT bank_transaction_id FROM receipt_transaction_matches)`
+      and(
+        eq(institutions.userId, userId),
+        gte(bankTransactions.date, monthStart),
+        lte(bankTransactions.date, today),
+        eq(bankTransactions.pending, false),
+        sql`${bankTransactions.amount} > 0`
+      )
     );
 
   const [expiringRow] = await db
@@ -41,27 +57,23 @@ router.get("/summary", async (_req, res) => {
     .from(scannedReceipts)
     .where(
       and(
+        eq(scannedReceipts.userId, userId),
         sql`${scannedReceipts.returnDeadline} IS NOT NULL`,
         gte(scannedReceipts.returnDeadline, today),
         lte(scannedReceipts.returnDeadline, twoWeeksStr)
       )
     );
 
-  const [spendRow] = await db
-    .select({ total: sql<number>`coalesce(sum(${bankTransactions.amount}), 0)::float` })
-    .from(bankTransactions)
-    .where(
-      and(
-        gte(bankTransactions.date, monthStart),
-        lte(bankTransactions.date, today),
-        eq(bankTransactions.pending, false)
-      )
-    );
-
   const [pendingRow] = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(receiptTransactionMatches)
-    .where(eq(receiptTransactionMatches.confirmed, false));
+    .innerJoin(scannedReceipts, eq(receiptTransactionMatches.receiptId, scannedReceipts.id))
+    .where(
+      and(
+        eq(scannedReceipts.userId, userId),
+        eq(receiptTransactionMatches.confirmed, false)
+      )
+    );
 
   const totalReceipts = totalReceiptsRow?.count ?? 0;
   const matchedReceipts = matchedReceiptsRow?.count ?? 0;
@@ -71,33 +83,69 @@ router.get("/summary", async (_req, res) => {
     matchedReceipts,
     unmatchedReceipts: totalReceipts - matchedReceipts,
     totalTransactions: totalTxnRow?.count ?? 0,
-    unmatchedTransactions: unmatchedTxnRow?.count ?? 0,
     expiringReturns: expiringRow?.count ?? 0,
     totalSpendThisMonth: spendRow?.total ?? 0,
     pendingReconciliation: pendingRow?.count ?? 0,
   });
 });
 
-router.get("/spending-by-category", async (req, res) => {
-  const parsed = GetSpendingByCategoryQueryParams.safeParse(req.query);
-  const params = parsed.success ? parsed.data : {};
+// GET /dashboard/spending-over-time
+// Returns daily or cumulative spending by category over a date range
+router.get("/spending-over-time", async (req, res) => {
+  const userId = req.user!.userId;
+  const { from, to, cumulative } = req.query as {
+    from?: string;
+    to?: string;
+    cumulative?: string;
+  };
 
-  const conditions = [];
-  if (params.from) conditions.push(gte(bankTransactions.date, params.from));
-  if (params.to) conditions.push(lte(bankTransactions.date, params.to));
+  const today = new Date().toISOString().slice(0, 10);
+  const monthAgo = new Date();
+  monthAgo.setMonth(monthAgo.getMonth() - 1);
+  const fromDate = from ?? monthAgo.toISOString().slice(0, 10);
+  const toDate = to ?? today;
 
+  // Get daily spending per category
   const rows = await db
     .select({
-      category: sql<string>`coalesce(${bankTransactions.categoryPrimary}, 'Uncategorized')`,
-      total: sql<number>`sum(${bankTransactions.amount})::float`,
-      count: sql<number>`count(*)::int`,
+      date: bankTransactions.date,
+      category: bankTransactions.userCategory,
+      total: sql<number>`SUM(${bankTransactions.amount})`,
     })
     .from(bankTransactions)
-    .where(conditions.length ? and(...conditions) : undefined)
-    .groupBy(sql`coalesce(${bankTransactions.categoryPrimary}, 'Uncategorized')`)
-    .orderBy(sql`sum(${bankTransactions.amount}) desc`);
+    .innerJoin(accounts, eq(bankTransactions.accountId, accounts.id))
+    .innerJoin(institutions, eq(accounts.institutionId, institutions.id))
+    .where(
+      and(
+        eq(institutions.userId, userId),
+        sql`${bankTransactions.userCategory} IS NOT NULL`,
+        sql`${bankTransactions.amount} > 0`,
+        eq(bankTransactions.ignored, false),
+        gte(bankTransactions.date, fromDate),
+        lte(bankTransactions.date, toDate)
+      )
+    )
+    .groupBy(bankTransactions.date, bankTransactions.userCategory)
+    .orderBy(bankTransactions.date);
 
-  res.json(rows);
+  if (cumulative !== "true") {
+    res.json(rows.map((r) => ({
+      date: r.date,
+      category: r.category ?? "Other",
+      total: Number(r.total) || 0,
+    })));
+    return;
+  }
+
+  // Build cumulative totals per category
+  const cumTotals: Record<string, number> = {};
+  const result = rows.map((r) => {
+    const cat = r.category ?? "Other";
+    cumTotals[cat] = (cumTotals[cat] ?? 0) + (Number(r.total) || 0);
+    return { date: r.date, category: cat, total: cumTotals[cat] };
+  });
+
+  res.json(result);
 });
 
 export default router;

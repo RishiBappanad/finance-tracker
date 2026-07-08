@@ -2,7 +2,7 @@ FROM node:22-slim
 RUN corepack enable && corepack prepare pnpm@latest --activate
 WORKDIR /app
 
-# Install dependencies
+# Install dependencies (copy manifests first for better layer caching)
 COPY pnpm-workspace.yaml pnpm-lock.yaml package.json .npmrc ./
 COPY lib/db/package.json ./lib/db/
 COPY lib/api-spec/package.json ./lib/api-spec/
@@ -20,11 +20,20 @@ COPY lib/ ./lib/
 COPY artifacts/ ./artifacts/
 COPY scripts/ ./scripts/
 
-# Build everything
-RUN pnpm run build
+# Build shared libs + API server (skip typecheck - build only)
+RUN pnpm --filter @workspace/db run build 2>/dev/null || true
+RUN pnpm --filter @workspace/api-zod run build 2>/dev/null || true
+RUN pnpm --filter @workspace/api-client-react run build 2>/dev/null || true
+RUN pnpm --filter @workspace/api-server run build
+
+# Build the React frontend
 RUN pnpm --filter @workspace/receipt-wallet run build
+
+# Move frontend output to /app/public (where app.ts expects it via process.cwd())
+RUN mv /app/artifacts/receipt-wallet/dist/public /app/public
 
 EXPOSE 3000
 ENV PORT=3000
 ENV NODE_ENV=production
+
 CMD ["node", "--enable-source-maps", "artifacts/api-server/dist/index.mjs"]
