@@ -1,5 +1,5 @@
-// API base URL — empty in production (same origin), localhost in dev
-export const API_BASE = import.meta.env.DEV ? "http://localhost:5001" : "";
+// API base URL — empty in production (proxy strips /finance prefix), localhost in dev
+export const API_BASE = import.meta.env.DEV ? "http://localhost:5001" : "/finance";
 
 const TOKEN_KEY = "auth_token";
 

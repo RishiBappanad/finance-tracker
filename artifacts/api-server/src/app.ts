@@ -41,7 +41,12 @@ if (process.env.NODE_ENV === "production") {
   // SPA fallback — serve index.html for non-API routes (Express 5 syntax)
   app.use((req, res, next) => {
     if (req.path.startsWith("/api")) return next();
-    res.sendFile(path.join(publicDir, "index.html"));
+    const indexPath = path.join(publicDir, "index.html");
+    res.sendFile(indexPath, (err) => {
+      if (err) {
+        res.status(404).json({ error: "Not found" });
+      }
+    });
   });
 }
 
