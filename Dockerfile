@@ -26,7 +26,9 @@ RUN pnpm --filter @workspace/api-zod run build 2>/dev/null || true
 RUN pnpm --filter @workspace/api-client-react run build 2>/dev/null || true
 RUN pnpm --filter @workspace/api-server run build
 
-# Build the React frontend
+# Build the React frontend with proxy base path
+ENV VITE_BASE_PATH=/finance/
+ENV VITE_API_BASE=/finance
 RUN pnpm --filter @workspace/receipt-wallet run build
 
 # Move frontend output to /app/public (where app.ts expects it via process.cwd())

@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/use-auth";
+import { AppSwitcher } from "@/components/app-switcher";
 
 interface LayoutProps {
   children: ReactNode;
@@ -73,6 +74,9 @@ export function Layout({ children }: LayoutProps) {
 
   return (
     <div className="flex min-h-screen w-full bg-background">
+      {/* App Switcher */}
+      <AppSwitcher />
+
       {/* Desktop sidebar */}
       <aside className="w-64 flex-shrink-0 bg-sidebar border-r border-sidebar-border hidden md:flex flex-col">
         <div className="h-16 flex items-center px-6 border-b border-sidebar-border">
