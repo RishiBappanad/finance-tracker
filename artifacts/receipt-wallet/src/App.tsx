@@ -18,11 +18,13 @@ import { Loader2 } from "lucide-react";
 
 const queryClient = new QueryClient();
 
-// Extract Google OAuth token from URL hash BEFORE AuthProvider reads localStorage.
-// This runs synchronously at module load time, so AuthProvider will see the token.
+// Extract the trackstack-auth token from the URL hash BEFORE AuthProvider
+// reads localStorage. This runs synchronously at module load time, so
+// AuthProvider will see the token. trackstack-auth's /google/callback
+// redirects with #trackstack_token=... (see trackstack-auth/src/routes.ts).
 (function extractGoogleToken() {
   const hash = window.location.hash;
-  const match = hash.match(/google_token=([^&]+)/);
+  const match = hash.match(/trackstack_token=([^&]+)/);
   if (match) {
     localStorage.setItem("auth_token", match[1]);
     window.location.hash = "";
