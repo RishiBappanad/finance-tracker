@@ -53,3 +53,40 @@ export function AppSwitcher() {
     </aside>
   );
 }
+
+export function MobileAppSwitcher() {
+  const [apps, setApps] = useState<AppEntry[]>([]);
+
+  useEffect(() => {
+    fetch("/apps.json")
+      .then((r) => r.json())
+      .then(setApps)
+      .catch(() => {});
+  }, []);
+
+  if (apps.length === 0) return null;
+
+  return (
+    <div className="flex md:hidden items-center gap-2 px-2 py-1.5 border-b border-sidebar-border bg-sidebar">
+      {apps.map((app) => {
+        const Icon = ICON_MAP[app.icon] || LayoutDashboard;
+        const isActive = app.id === CURRENT_APP;
+        return (
+          <a
+            key={app.id}
+            href={app.href}
+            title={app.label}
+            className={cn(
+              "w-8 h-8 rounded-md flex items-center justify-center transition-all duration-200",
+              isActive
+                ? "bg-sidebar-accent text-sidebar-accent-foreground ring-1 ring-sidebar-ring"
+                : "text-sidebar-foreground/50 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+            )}
+          >
+            <Icon className="h-4 w-4" />
+          </a>
+        );
+      })}
+    </div>
+  );
+}

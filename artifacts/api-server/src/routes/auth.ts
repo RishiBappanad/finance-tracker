@@ -119,7 +119,9 @@ router.get("/google/callback", async (req, res) => {
   });
 
   if (!tokenResp.ok) {
-    return void res.status(400).json({ error: "Failed to exchange Google code" });
+    const errBody = await tokenResp.text();
+    console.error("Google token exchange failed:", tokenResp.status, errBody);
+    return void res.status(400).json({ error: "Failed to exchange Google code", details: errBody });
   }
 
   const { access_token } = await tokenResp.json() as { access_token: string };

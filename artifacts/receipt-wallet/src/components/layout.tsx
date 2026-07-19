@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/use-auth";
-import { AppSwitcher } from "@/components/app-switcher";
+import { AppSwitcher, MobileAppSwitcher } from "@/components/app-switcher";
 
 interface LayoutProps {
   children: ReactNode;
@@ -113,6 +113,9 @@ export function Layout({ children }: LayoutProps) {
       )}
       
       <main className="flex-1 flex flex-col min-w-0 overflow-hidden">
+        {/* Mobile: App switcher bar */}
+        <MobileAppSwitcher />
+
         {/* Mobile header */}
         <header className="h-14 md:hidden flex items-center px-4 border-b border-border bg-card gap-3">
           <button onClick={() => setMobileOpen(true)} className="p-1">
