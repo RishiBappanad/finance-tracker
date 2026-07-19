@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { getPlaidAdapter, type PlaidAdapter } from "../../services/plaid.js";
+import { getPlaidAdapter, type PlaidAdapter } from "../../artifacts/api-server/src/services/plaid.js";
 
 const REAL_ENV = { ...process.env };
 

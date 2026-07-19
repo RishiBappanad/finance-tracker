@@ -1,50 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import request from "supertest";
+import { enqueue, resetQueue, getDbMock } from "../helpers/db-mock.js";
+import { authHeader, userA } from "../helpers/auth.js";
 
-// ── DB mock ────────────────────────────────────────────────────────────────
-
-const { mockDb, enqueue, reset } = vi.hoisted(() => {
-  const queue: unknown[] = [];
-
-  const makeChain = () => {
-    const c: Record<string, unknown> = {};
-    for (const m of [
-      "from", "where", "leftJoin", "rightJoin", "orderBy", "limit", "offset",
-      "groupBy", "having", "values", "onConflictDoNothing", "onConflictDoUpdate",
-      "returning", "set", "execute",
-    ]) {
-      c[m] = () => c;
-    }
-    (c as any).then = (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) =>
-      Promise.resolve(queue.shift() ?? []).then(res, rej);
-    (c as any).catch = (rej: (e: unknown) => unknown) =>
-      Promise.resolve(queue.shift() ?? []).catch(rej);
-    return c;
-  };
-
-  const mockDb = {
-    select: () => makeChain(),
-    insert: () => makeChain(),
-    update: () => makeChain(),
-    delete: () => makeChain(),
-  };
-
-  return {
-    mockDb,
-    enqueue: (...vals: unknown[]) => vals.forEach((v) => queue.push(v)),
-    reset: () => queue.splice(0, queue.length),
-  };
-});
-
-vi.mock("@workspace/db", () => ({
-  db: mockDb,
-  accounts: {},
-  institutions: {},
-  bankTransactions: {},
-  scannedReceipts: {},
-  receiptItems: {},
-  receiptTransactionMatches: {},
-}));
+vi.mock("@workspace/db", () => getDbMock());
 
 // ── Plaid mock ─────────────────────────────────────────────────────────────
 
@@ -55,16 +14,16 @@ const mockPlaid = vi.hoisted(() => ({
   name: "mock",
 }));
 
-vi.mock("../../services/plaid.js", () => ({
+vi.mock("../../artifacts/api-server/src/services/plaid.js", () => ({
   getPlaidAdapter: () => mockPlaid,
 }));
 
-const { default: app } = await import("../../app.js");
+const { default: app } = await import("../../artifacts/api-server/src/app.js");
 
 // ── Fixtures ───────────────────────────────────────────────────────────────
 
 beforeEach(() => {
-  reset();
+  resetQueue();
   vi.clearAllMocks();
 });
 
@@ -86,9 +45,10 @@ const TXN = {
 
 describe("GET /api/transactions/unmatched", () => {
   it("returns 200 with unmatched transactions", async () => {
+    enqueue([]); // requireAuth's ensureLocalUser insert
     // Only the outer (awaited) select pops the queue; the inner subquery select is not awaited
     enqueue([TXN]);
-    const res = await request(app).get("/api/transactions/unmatched");
+    const res = await request(app).get("/api/transactions/unmatched").set(authHeader(userA));
     expect(res.status).toBe(200);
     expect(res.body).toHaveLength(1);
     expect(res.body[0].id).toBe("txn-1");
@@ -96,21 +56,29 @@ describe("GET /api/transactions/unmatched", () => {
 
   it("returns empty array when all transactions are matched", async () => {
     enqueue([]);
-    const res = await request(app).get("/api/transactions/unmatched");
+    enqueue([]);
+    const res = await request(app).get("/api/transactions/unmatched").set(authHeader(userA));
     expect(res.status).toBe(200);
     expect(res.body).toEqual([]);
   });
 
   it("serializes createdAt to ISO string", async () => {
+    enqueue([]);
     enqueue([TXN]);
-    const res = await request(app).get("/api/transactions/unmatched");
+    const res = await request(app).get("/api/transactions/unmatched").set(authHeader(userA));
     expect(typeof res.body[0].createdAt).toBe("string");
   });
 
   it("includes matchId as null for unmatched transactions", async () => {
+    enqueue([]);
     enqueue([TXN]);
-    const res = await request(app).get("/api/transactions/unmatched");
+    const res = await request(app).get("/api/transactions/unmatched").set(authHeader(userA));
     expect(res.body[0].matchId).toBeNull();
+  });
+
+  it("returns 401 without auth", async () => {
+    const res = await request(app).get("/api/transactions/unmatched");
+    expect(res.status).toBe(401);
   });
 });
 
@@ -118,55 +86,63 @@ describe("GET /api/transactions/unmatched", () => {
 
 describe("GET /api/transactions", () => {
   it("returns 200 with transaction list", async () => {
+    enqueue([]);
     enqueue([TXN], []); // transactions, then match rows
-    const res = await request(app).get("/api/transactions");
+    const res = await request(app).get("/api/transactions").set(authHeader(userA));
     expect(res.status).toBe(200);
     expect(res.body).toHaveLength(1);
     expect(res.body[0].id).toBe("txn-1");
   });
 
   it("attaches matchId from the match table", async () => {
+    enqueue([]);
     enqueue([TXN], [{ txnId: "txn-1", id: 99 }]);
-    const res = await request(app).get("/api/transactions");
+    const res = await request(app).get("/api/transactions").set(authHeader(userA));
     expect(res.body[0].matchId).toBe(99);
   });
 
   it("returns empty array when no transactions", async () => {
+    enqueue([]);
     enqueue([], []);
-    const res = await request(app).get("/api/transactions");
+    const res = await request(app).get("/api/transactions").set(authHeader(userA));
     expect(res.status).toBe(200);
     expect(res.body).toEqual([]);
   });
 
   it("accepts accountId query param without error", async () => {
+    enqueue([]);
     enqueue([TXN], []);
-    const res = await request(app).get("/api/transactions?accountId=acc-1");
+    const res = await request(app).get("/api/transactions?accountId=acc-1").set(authHeader(userA));
     expect(res.status).toBe(200);
   });
 
   it("accepts pending=true query param without error", async () => {
+    enqueue([]);
     enqueue([], []);
-    const res = await request(app).get("/api/transactions?pending=true");
+    const res = await request(app).get("/api/transactions?pending=true").set(authHeader(userA));
     expect(res.status).toBe(200);
   });
 
   it("accepts from/to date filter query params", async () => {
+    enqueue([]);
     enqueue([TXN], []);
     const res = await request(app).get(
       "/api/transactions?from=2025-01-01&to=2025-01-31"
-    );
+    ).set(authHeader(userA));
     expect(res.status).toBe(200);
   });
 
   it("accepts search query param", async () => {
+    enqueue([]);
     enqueue([TXN], []);
-    const res = await request(app).get("/api/transactions?search=whole+foods");
+    const res = await request(app).get("/api/transactions?search=whole+foods").set(authHeader(userA));
     expect(res.status).toBe(200);
   });
 
   it("includes all serialized fields in response", async () => {
+    enqueue([]);
     enqueue([TXN], []);
-    const res = await request(app).get("/api/transactions");
+    const res = await request(app).get("/api/transactions").set(authHeader(userA));
     const t = res.body[0];
     expect(t).toHaveProperty("id");
     expect(t).toHaveProperty("accountId");
@@ -184,29 +160,33 @@ describe("GET /api/transactions", () => {
 
 describe("GET /api/transactions/:transactionId", () => {
   it("returns 200 with the transaction when found", async () => {
+    enqueue([]);
     enqueue([TXN], []); // txn row, then match row
-    const res = await request(app).get("/api/transactions/txn-1");
+    const res = await request(app).get("/api/transactions/txn-1").set(authHeader(userA));
     expect(res.status).toBe(200);
     expect(res.body.id).toBe("txn-1");
     expect(res.body.amount).toBe(42.5);
   });
 
   it("returns 404 when transaction does not exist", async () => {
+    enqueue([]);
     enqueue([]); // empty result → 404
-    const res = await request(app).get("/api/transactions/nonexistent");
+    const res = await request(app).get("/api/transactions/nonexistent").set(authHeader(userA));
     expect(res.status).toBe(404);
     expect(res.body).toHaveProperty("error");
   });
 
   it("includes matchId from match table", async () => {
+    enqueue([]);
     enqueue([TXN], [{ id: 77 }]); // txn, then match
-    const res = await request(app).get("/api/transactions/txn-1");
+    const res = await request(app).get("/api/transactions/txn-1").set(authHeader(userA));
     expect(res.body.matchId).toBe(77);
   });
 
   it("sets matchId to null when no match exists", async () => {
+    enqueue([]);
     enqueue([TXN], []); // txn found, no match
-    const res = await request(app).get("/api/transactions/txn-1");
+    const res = await request(app).get("/api/transactions/txn-1").set(authHeader(userA));
     expect(res.body.matchId).toBeNull();
   });
 });
@@ -215,8 +195,10 @@ describe("GET /api/transactions/:transactionId", () => {
 
 describe("POST /api/transactions/sync", () => {
   it("returns 200 with sync summary when no accounts exist", async () => {
-    enqueue([]); // no accounts → loop doesn't run
-    const res = await request(app).post("/api/transactions/sync");
+    enqueue([]); // requireAuth's ensureLocalUser insert
+    enqueue([]); // institutions query
+    enqueue([]); // accounts query, empty -> loop doesn't run
+    const res = await request(app).post("/api/transactions/sync").set(authHeader(userA));
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({
       added: 0,
@@ -227,7 +209,8 @@ describe("POST /api/transactions/sync", () => {
   });
 
   it("syncs transactions for each account", async () => {
-    const mockAccount = { id: "acc-1", accessToken: "mock-token" };
+    const mockInstitution = { id: "inst-1", plaidAccessToken: "mock-token" };
+    const mockAccount = { id: "acc-1", institutionId: "inst-1" };
     mockPlaid.syncTransactions.mockResolvedValue({
       added: [
         {
@@ -244,40 +227,69 @@ describe("POST /api/transactions/sync", () => {
       ],
       modified: [],
       removed: [],
+      hasMore: false,
+      nextCursor: undefined,
     });
+    enqueue([]); // requireAuth's ensureLocalUser insert
+    enqueue([mockInstitution]); // institutions query
     enqueue([mockAccount]); // accounts query
     enqueue([]); // insert txn (onConflictDoNothing, returns void-ish)
 
-    const res = await request(app).post("/api/transactions/sync");
+    const res = await request(app).post("/api/transactions/sync").set(authHeader(userA));
     expect(res.status).toBe(200);
     expect(res.body.added).toBe(1);
     expect(res.body.accounts).toBe(1);
   });
 
   it("reports modified and removed counts from Plaid", async () => {
-    const mockAccount = { id: "acc-1" };
+    const mockInstitution = { id: "inst-1", plaidAccessToken: "mock-token" };
+    const mockAccount = { id: "acc-1", institutionId: "inst-1" };
     mockPlaid.syncTransactions.mockResolvedValue({
       added: [],
-      modified: [{ transactionId: "t1" }, { transactionId: "t2" }],
+      modified: [
+        { transactionId: "t1", accountId: "acc-1", amount: 10, merchantName: "A", name: "A", category: ["Food"], date: "2025-01-10", pending: false },
+        { transactionId: "t2", accountId: "acc-1", amount: 20, merchantName: "B", name: "B", category: ["Food"], date: "2025-01-11", pending: false },
+      ],
       removed: ["t3"],
+      hasMore: false,
+      nextCursor: undefined,
     });
+    enqueue([]);
+    enqueue([mockInstitution]);
     enqueue([mockAccount]);
+    enqueue([]); // update t1
+    enqueue([]); // update t2
+    enqueue([]); // delete t3
 
-    const res = await request(app).post("/api/transactions/sync");
+    const res = await request(app).post("/api/transactions/sync").set(authHeader(userA));
     expect(res.body.updated).toBe(2);
     expect(res.body.removed).toBe(1);
   });
 
   it("continues gracefully when a per-account sync fails", async () => {
-    const accounts = [{ id: "acc-1" }, { id: "acc-2" }];
+    const mockInstitutions = [
+      { id: "inst-1", plaidAccessToken: "mock-token-1" },
+      { id: "inst-2", plaidAccessToken: "mock-token-2" },
+    ];
+    const mockAccounts = [
+      { id: "acc-1", institutionId: "inst-1" },
+      { id: "acc-2", institutionId: "inst-2" },
+    ];
     mockPlaid.syncTransactions
       .mockRejectedValueOnce(new Error("Plaid error"))
-      .mockResolvedValueOnce({ added: [], modified: [], removed: [] });
-    enqueue(accounts);
+      .mockResolvedValueOnce({ added: [], modified: [], removed: [], hasMore: false, nextCursor: undefined });
+    enqueue([]);
+    enqueue(mockInstitutions);
+    enqueue(mockAccounts);
 
-    const res = await request(app).post("/api/transactions/sync");
+    const res = await request(app).post("/api/transactions/sync").set(authHeader(userA));
     expect(res.status).toBe(200);
-    // Both accounts attempted; first fails gracefully
+    // Both institutions attempted; first fails gracefully, second succeeds
     expect(res.body.accounts).toBe(2);
+  });
+
+  it("returns 401 without auth", async () => {
+    const res = await request(app).post("/api/transactions/sync");
+    expect(res.status).toBe(401);
   });
 });

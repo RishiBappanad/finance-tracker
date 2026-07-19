@@ -3,8 +3,11 @@ import request from "supertest";
 import jwt from "jsonwebtoken";
 
 const JWT_SECRET = "test-secret-for-jwt-signing";
-const tokenA = jwt.sign({ userId: 1, email: "alice@test.com" }, JWT_SECRET, { expiresIn: "1h" });
-const tokenB = jwt.sign({ userId: 2, email: "bob@test.com" }, JWT_SECRET, { expiresIn: "1h" });
+// requireAuth now verifies a trackstack-auth-issued JWT ({ accountId, email }),
+// not a locally-issued one — mint tokens in that shape, same as
+// tests/integration/trackstack-auth.test.ts.
+const tokenA = jwt.sign({ accountId: 1, email: "alice@test.com" }, JWT_SECRET, { expiresIn: "1h" });
+const tokenB = jwt.sign({ accountId: 2, email: "bob@test.com" }, JWT_SECRET, { expiresIn: "1h" });
 
 // ── DB mock ──────────────────────────────────────────────────────────────────
 
@@ -64,6 +67,7 @@ describe("User A cannot access User B's data", () => {
   describe("Accounts", () => {
     it("GET /api/accounts only returns accounts for the authenticated user", async () => {
       // Mock returns Alice's accounts (joined through institutions where userId=1)
+      enqueue([]); // requireAuth's ensureLocalUser insert
       enqueue([
         { id: "acct-1", institutionId: "ins-1", institutionName: "Alice Bank", name: "Checking", type: "depository", subtype: "checking", mask: "1234", currency: "USD", createdAt: new Date() },
       ]);
@@ -91,6 +95,7 @@ describe("User A cannot access User B's data", () => {
 
   describe("Transactions", () => {
     it("GET /api/transactions returns only user's transactions", async () => {
+      enqueue([]); // requireAuth's ensureLocalUser insert
       enqueue([
         { id: "txn-1", accountId: "acct-1", accountName: "Checking", accountMask: "1234", amount: 50, currency: "USD", merchantName: "Store", merchantNameRaw: "Store", categoryPrimary: null, categoryDetail: null, userCategory: "Shopping", ignored: false, date: "2026-07-01", pending: false, createdAt: new Date() },
       ]);
@@ -123,6 +128,7 @@ describe("User A cannot access User B's data", () => {
 
   describe("Categories", () => {
     it("GET /api/categories returns only user's custom categories", async () => {
+      enqueue([]); // requireAuth's ensureLocalUser insert
       enqueue([
         { id: 1, name: "My Custom", color: "#ff0000", icon: null, createdAt: new Date() },
       ]);
@@ -137,6 +143,7 @@ describe("User A cannot access User B's data", () => {
     });
 
     it("POST /api/categories creates category for the authenticated user", async () => {
+      enqueue([]); // requireAuth's ensureLocalUser insert
       enqueue([{ id: 5, name: "New Cat", color: null, icon: null, createdAt: new Date() }]);
 
       const res = await request(app)
@@ -182,7 +189,7 @@ describe("User A cannot access User B's data", () => {
 
 describe("Token tampering", () => {
   it("rejects token signed with wrong secret", async () => {
-    const badToken = jwt.sign({ userId: 1, email: "x@x.com" }, "wrong-secret", { expiresIn: "1h" });
+    const badToken = jwt.sign({ accountId: 1, email: "x@x.com" }, "wrong-secret", { expiresIn: "1h" });
     const res = await request(app)
       .get("/api/accounts")
       .set("Authorization", `Bearer ${badToken}`);
@@ -191,10 +198,10 @@ describe("Token tampering", () => {
 
   it("rejects token with modified payload", async () => {
     // Create a valid token then modify the payload
-    const token = jwt.sign({ userId: 1, email: "x@x.com" }, JWT_SECRET);
+    const token = jwt.sign({ accountId: 1, email: "x@x.com" }, JWT_SECRET);
     const parts = token.split(".");
     // Tamper with payload
-    const tamperedPayload = Buffer.from(JSON.stringify({ userId: 999, email: "hacker@evil.com" })).toString("base64url");
+    const tamperedPayload = Buffer.from(JSON.stringify({ accountId: 999, email: "hacker@evil.com" })).toString("base64url");
     const tampered = `${parts[0]}.${tamperedPayload}.${parts[2]}`;
 
     const res = await request(app)

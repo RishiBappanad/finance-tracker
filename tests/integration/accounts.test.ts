@@ -1,50 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import request from "supertest";
+import { mockDb, enqueue, resetQueue, getDbMock } from "../helpers/db-mock.js";
+import { authHeader, userA } from "../helpers/auth.js";
 
-// ── DB mock (must be hoisted before any import that resolves @workspace/db) ──
-
-const { mockDb, enqueue, reset } = vi.hoisted(() => {
-  const queue: unknown[] = [];
-
-  const makeChain = () => {
-    const c: Record<string, unknown> = {};
-    for (const m of [
-      "from", "where", "leftJoin", "rightJoin", "orderBy", "limit", "offset",
-      "groupBy", "having", "values", "onConflictDoNothing", "onConflictDoUpdate",
-      "returning", "set", "execute",
-    ]) {
-      c[m] = () => c;
-    }
-    (c as any).then = (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) =>
-      Promise.resolve(queue.shift() ?? []).then(res, rej);
-    (c as any).catch = (rej: (e: unknown) => unknown) =>
-      Promise.resolve(queue.shift() ?? []).catch(rej);
-    return c;
-  };
-
-  const mockDb = {
-    select: () => makeChain(),
-    insert: () => makeChain(),
-    update: () => makeChain(),
-    delete: () => makeChain(),
-  };
-
-  return {
-    mockDb,
-    enqueue: (...vals: unknown[]) => vals.forEach((v) => queue.push(v)),
-    reset: () => queue.splice(0, queue.length),
-  };
-});
-
-vi.mock("@workspace/db", () => ({
-  db: mockDb,
-  accounts: {},
-  institutions: {},
-  bankTransactions: {},
-  scannedReceipts: {},
-  receiptItems: {},
-  receiptTransactionMatches: {},
-}));
+vi.mock("@workspace/db", () => getDbMock());
 
 // ── Plaid mock ─────────────────────────────────────────────────────────────
 
@@ -55,18 +14,16 @@ const mockPlaid = vi.hoisted(() => ({
   name: "mock",
 }));
 
-vi.mock("../../services/plaid.js", () => ({
+vi.mock("../../artifacts/api-server/src/services/plaid.js", () => ({
   getPlaidAdapter: () => mockPlaid,
 }));
 
-// ── App (imported after mocks are set up) ─────────────────────────────────
+const { default: app } = await import("../../artifacts/api-server/src/app.js");
 
-const { default: app } = await import("../../app.js");
-
-// ── Tests ──────────────────────────────────────────────────────────────────
+// ── Fixtures ───────────────────────────────────────────────────────────────
 
 beforeEach(() => {
-  reset();
+  resetQueue();
   vi.clearAllMocks();
 });
 
@@ -84,8 +41,9 @@ const ACCOUNT_ROW = {
 
 describe("GET /api/accounts", () => {
   it("returns 200 with account list", async () => {
+    enqueue([]); // requireAuth's ensureLocalUser insert
     enqueue([ACCOUNT_ROW]);
-    const res = await request(app).get("/api/accounts");
+    const res = await request(app).get("/api/accounts").set(authHeader(userA));
     expect(res.status).toBe(200);
     expect(res.body).toHaveLength(1);
     expect(res.body[0].id).toBe("acc-1");
@@ -93,24 +51,32 @@ describe("GET /api/accounts", () => {
   });
 
   it("serializes createdAt to ISO string", async () => {
+    enqueue([]);
     enqueue([ACCOUNT_ROW]);
-    const res = await request(app).get("/api/accounts");
+    const res = await request(app).get("/api/accounts").set(authHeader(userA));
     expect(typeof res.body[0].createdAt).toBe("string");
     expect(res.body[0].createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
   it("returns empty array when no accounts exist", async () => {
     enqueue([]);
-    const res = await request(app).get("/api/accounts");
+    enqueue([]);
+    const res = await request(app).get("/api/accounts").set(authHeader(userA));
     expect(res.status).toBe(200);
     expect(res.body).toEqual([]);
+  });
+
+  it("returns 401 without auth", async () => {
+    const res = await request(app).get("/api/accounts");
+    expect(res.status).toBe(401);
   });
 });
 
 describe("GET /api/accounts/:accountId", () => {
   it("returns 200 with account when found", async () => {
+    enqueue([]);
     enqueue([ACCOUNT_ROW]);
-    const res = await request(app).get("/api/accounts/acc-1");
+    const res = await request(app).get("/api/accounts/acc-1").set(authHeader(userA));
     expect(res.status).toBe(200);
     expect(res.body.id).toBe("acc-1");
     expect(res.body.name).toBe("Checking");
@@ -118,14 +84,16 @@ describe("GET /api/accounts/:accountId", () => {
 
   it("returns 404 when account not found", async () => {
     enqueue([]);
-    const res = await request(app).get("/api/accounts/nonexistent");
+    enqueue([]);
+    const res = await request(app).get("/api/accounts/nonexistent").set(authHeader(userA));
     expect(res.status).toBe(404);
     expect(res.body).toHaveProperty("error");
   });
 
   it("serializes createdAt to ISO string on single-account response", async () => {
+    enqueue([]);
     enqueue([ACCOUNT_ROW]);
-    const res = await request(app).get("/api/accounts/acc-1");
+    const res = await request(app).get("/api/accounts/acc-1").set(authHeader(userA));
     expect(typeof res.body.createdAt).toBe("string");
   });
 });
@@ -149,10 +117,11 @@ describe("POST /api/accounts", () => {
         currency: "USD",
       },
     ]);
-    // DB calls: insert institution, insert account, select account for response
-    enqueue([], [{ id: "acc-new" }], [{ ...ACCOUNT_ROW, id: "acc-new", name: "Savings" }]);
+    enqueue([]); // requireAuth's ensureLocalUser insert
+    // DB calls: insert institution, update institution, insert account, select account for response
+    enqueue([], [], [{ id: "acc-new" }], [{ ...ACCOUNT_ROW, id: "acc-new", name: "Savings" }]);
 
-    const res = await request(app).post("/api/accounts").send(VALID_BODY);
+    const res = await request(app).post("/api/accounts").set(authHeader(userA)).send(VALID_BODY);
     expect(res.status).toBe(201);
     expect(res.body.id).toBe("acc-new");
   });
@@ -160,45 +129,53 @@ describe("POST /api/accounts", () => {
   it("returns 400 when Plaid returns no accounts", async () => {
     mockPlaid.exchangePublicToken.mockResolvedValue({ accessToken: "access-token" });
     mockPlaid.getAccounts.mockResolvedValue([]);
+    enqueue([]); // requireAuth's ensureLocalUser insert
     // DB call: insert institution only (before early return)
     enqueue([]);
 
-    const res = await request(app).post("/api/accounts").send(VALID_BODY);
+    const res = await request(app).post("/api/accounts").set(authHeader(userA)).send(VALID_BODY);
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/no accounts/i);
   });
 
   it("returns 400 when request body is missing publicToken", async () => {
+    enqueue([]); // requireAuth's ensureLocalUser insert
     const res = await request(app)
       .post("/api/accounts")
+      .set(authHeader(userA))
       .send({ institutionId: "inst-1", institutionName: "Chase" });
     expect(res.status).toBe(400);
   });
 
   it("returns 400 when request body is missing institutionId", async () => {
+    enqueue([]);
     const res = await request(app)
       .post("/api/accounts")
+      .set(authHeader(userA))
       .send({ publicToken: "tok", institutionName: "Chase" });
     expect(res.status).toBe(400);
   });
 
   it("returns 400 when request body is empty", async () => {
-    const res = await request(app).post("/api/accounts").send({});
+    enqueue([]);
+    const res = await request(app).post("/api/accounts").set(authHeader(userA)).send({});
     expect(res.status).toBe(400);
   });
 });
 
 describe("DELETE /api/accounts/:accountId", () => {
   it("returns 204 on successful deletion", async () => {
+    enqueue([]); // requireAuth's ensureLocalUser insert
     enqueue([]);
-    const res = await request(app).delete("/api/accounts/acc-1");
+    const res = await request(app).delete("/api/accounts/acc-1").set(authHeader(userA));
     expect(res.status).toBe(204);
     expect(res.text).toBe("");
   });
 
   it("returns 204 even for non-existent account (idempotent delete)", async () => {
     enqueue([]);
-    const res = await request(app).delete("/api/accounts/ghost");
+    enqueue([]);
+    const res = await request(app).delete("/api/accounts/ghost").set(authHeader(userA));
     expect(res.status).toBe(204);
   });
 });
