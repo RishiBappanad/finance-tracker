@@ -26,9 +26,14 @@ RUN pnpm --filter @workspace/api-zod run build 2>/dev/null || true
 RUN pnpm --filter @workspace/api-client-react run build 2>/dev/null || true
 RUN pnpm --filter @workspace/api-server run build
 
-# Build the React frontend with proxy base path
-ENV VITE_BASE_PATH=/finance/
-ENV VITE_API_BASE=/finance
+# Build the React frontend. Defaults to standalone mode (base path "/",
+# empty API base since API calls already include "/api/..." relative to
+# the same origin), matching direct Cloud Run URLs. Override at build time
+# for proxy mode: docker build --build-arg BASE_PATH=/finance/ --build-arg API_BASE=/finance .
+ARG BASE_PATH=/
+ARG API_BASE=
+ENV VITE_BASE_PATH=${BASE_PATH}
+ENV VITE_API_BASE=${API_BASE}
 RUN pnpm --filter @workspace/receipt-wallet run build
 
 # Move frontend output to /app/public (where app.ts expects it via process.cwd())
