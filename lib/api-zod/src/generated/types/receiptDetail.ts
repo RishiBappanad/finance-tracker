@@ -6,6 +6,7 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { ReceiptItem } from './receiptItem';
+import type { ReceiptMatchSummary } from './receiptMatchSummary';
 
 export interface ReceiptDetail {
   id: number;
@@ -37,6 +38,7 @@ export interface ReceiptDetail {
   /** @nullable */
   matchId?: number | null;
   items: ReceiptItem[];
+  match?: ReceiptMatchSummary | null;
   createdAt: string;
   updatedAt: string;
 }

@@ -6,13 +6,17 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export interface ReceiptItemInput {
-  description: string;
-  quantity: number;
-  unitPrice: number;
-  lineTotal: number;
+/**
+ * All fields optional — only fields present are updated.
+ */
+export interface ReceiptItemUpdate {
+  description?: string;
+  quantity?: number;
+  unitPrice?: number;
+  lineTotal?: number;
   /** @nullable */
   category?: string | null;
   /** @nullable */
   sku?: string | null;
+  isTaxable?: boolean;
 }

@@ -198,6 +198,21 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
 
   # ── RECEIPTS ────────────────────────────────────────────────────────────────
+  /receipts/categories:
+    get:
+      operationId: listReceiptCategories
+      tags: [receipts]
+      summary: List valid categories for receipt items (same list transactions use — defaults + user-created)
+      responses:
+        "200":
+          description: Category names
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+
   /receipts:
     get:
       operationId: listReceipts
@@ -388,6 +403,38 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ReceiptItem"
+
+  /receipts/{receiptId}/items/{itemId}:
+    patch:
+      operationId: updateReceiptItem
+      tags: [receipts]
+      summary: Update a line item (e.g. re-assign its category) after the receipt has been saved
+      parameters:
+        - name: receiptId
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: itemId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReceiptItemUpdate"
+      responses:
+        "200":
+          description: Updated item
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReceiptItem"
+        "404":
+          description: Item not found
 
   # ── RECONCILIATION / MATCHES ─────────────────────────────────────────────────
   /reconcile:
@@ -697,10 +744,38 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ReceiptItem"
+        match:
+          oneOf:
+            - $ref: "#/components/schemas/ReceiptMatchSummary"
+            - type: "null"
         createdAt:
           type: string
         updatedAt:
           type: string
+
+    ReceiptMatchSummary:
+      type: object
+      description: The transaction this receipt is reconciled against, if any.
+      required: [matchId, matchMethod, confirmed, transaction]
+      properties:
+        matchId:
+          type: integer
+        matchMethod:
+          type: string
+        confirmed:
+          type: boolean
+        transaction:
+          type: object
+          required: [id, merchantName, amount, date]
+          properties:
+            id:
+              type: string
+            merchantName:
+              type: ["string", "null"]
+            amount:
+              type: number
+            date:
+              type: string
 
     ReceiptInput:
       type: object
@@ -773,6 +848,23 @@ components:
     ReceiptItemInput:
       type: object
       required: [description, quantity, unitPrice, lineTotal]
+      properties:
+        description:
+          type: string
+        quantity:
+          type: number
+        unitPrice:
+          type: number
+        lineTotal:
+          type: number
+        category:
+          type: ["string", "null"]
+        sku:
+          type: ["string", "null"]
+
+    ReceiptItemUpdate:
+      type: object
+      description: All fields optional — only fields present are updated.
       properties:
         description:
           type: string

@@ -108,6 +108,24 @@ export interface ReceiptItem {
   sortOrder?: number;
 }
 
+export type ReceiptMatchSummaryTransaction = {
+  id: string;
+  /** @nullable */
+  merchantName: string | null;
+  amount: number;
+  date: string;
+};
+
+/**
+ * The transaction this receipt is reconciled against, if any.
+ */
+export interface ReceiptMatchSummary {
+  matchId: number;
+  matchMethod: string;
+  confirmed: boolean;
+  transaction: ReceiptMatchSummaryTransaction;
+}
+
 export interface ReceiptDetail {
   id: number;
   sourceFilePath: string;
@@ -138,6 +156,7 @@ export interface ReceiptDetail {
   /** @nullable */
   matchId?: number | null;
   items: ReceiptItem[];
+  match?: ReceiptMatchSummary | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -185,6 +204,20 @@ export interface ReceiptItemInput {
   quantity: number;
   unitPrice: number;
   lineTotal: number;
+  /** @nullable */
+  category?: string | null;
+  /** @nullable */
+  sku?: string | null;
+}
+
+/**
+ * All fields optional — only fields present are updated.
+ */
+export interface ReceiptItemUpdate {
+  description?: string;
+  quantity?: number;
+  unitPrice?: number;
+  lineTotal?: number;
   /** @nullable */
   category?: string | null;
   /** @nullable */

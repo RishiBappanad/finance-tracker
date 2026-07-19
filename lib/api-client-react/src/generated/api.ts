@@ -39,6 +39,7 @@ import type {
   ReceiptInput,
   ReceiptItem,
   ReceiptItemInput,
+  ReceiptItemUpdate,
   ReceiptUpdate,
   ReconcileResult,
   SyncResult,
@@ -751,6 +752,83 @@ export function useGetTransaction<TData = Awaited<ReturnType<typeof getTransacti
 
 
 
+export const getListReceiptCategoriesUrl = () => {
+
+
+
+
+  return `/api/receipts/categories`
+}
+
+/**
+ * @summary List valid categories for receipt items (same list transactions use — defaults + user-created)
+ */
+export const listReceiptCategories = async ( options?: RequestInit): Promise<string[]> => {
+
+  return customFetch<string[]>(getListReceiptCategoriesUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListReceiptCategoriesQueryKey = () => {
+    return [
+    `/api/receipts/categories`
+    ] as const;
+    }
+
+
+export const getListReceiptCategoriesQueryOptions = <TData = Awaited<ReturnType<typeof listReceiptCategories>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listReceiptCategories>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListReceiptCategoriesQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listReceiptCategories>>> = ({ signal }) => listReceiptCategories({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listReceiptCategories>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type ListReceiptCategoriesQueryResult = NonNullable<Awaited<ReturnType<typeof listReceiptCategories>>>
+export type ListReceiptCategoriesQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary List valid categories for receipt items (same list transactions use — defaults + user-created)
+ */
+
+export function useListReceiptCategories<TData = Awaited<ReturnType<typeof listReceiptCategories>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listReceiptCategories>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getListReceiptCategoriesQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
 export const getListReceiptsUrl = (params?: ListReceiptsParams,) => {
   const normalizedParams = new URLSearchParams();
 
@@ -1430,6 +1508,79 @@ export const useCreateReceiptItem = <TError = ErrorType<unknown>,
         TContext
       > => {
       return useMutation(getCreateReceiptItemMutationOptions(options));
+    }
+
+export const getUpdateReceiptItemUrl = (receiptId: number,
+    itemId: number,) => {
+
+
+
+
+  return `/api/receipts/${receiptId}/items/${itemId}`
+}
+
+/**
+ * @summary Update a line item (e.g. re-assign its category) after the receipt has been saved
+ */
+export const updateReceiptItem = async (receiptId: number,
+    itemId: number,
+    receiptItemUpdate: ReceiptItemUpdate, options?: RequestInit): Promise<ReceiptItem> => {
+
+  return customFetch<ReceiptItem>(getUpdateReceiptItemUrl(receiptId,itemId),
+  {
+    ...options,
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(receiptItemUpdate)
+  }
+);}
+
+
+
+
+export const getUpdateReceiptItemMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateReceiptItem>>, TError,{receiptId: number;itemId: number;data: BodyType<ReceiptItemUpdate>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof updateReceiptItem>>, TError,{receiptId: number;itemId: number;data: BodyType<ReceiptItemUpdate>}, TContext> => {
+
+const mutationKey = ['updateReceiptItem'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateReceiptItem>>, {receiptId: number;itemId: number;data: BodyType<ReceiptItemUpdate>}> = (props) => {
+          const {receiptId,itemId,data} = props ?? {};
+
+          return  updateReceiptItem(receiptId,itemId,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpdateReceiptItemMutationResult = NonNullable<Awaited<ReturnType<typeof updateReceiptItem>>>
+    export type UpdateReceiptItemMutationBody = BodyType<ReceiptItemUpdate>
+    export type UpdateReceiptItemMutationError = ErrorType<void>
+
+    /**
+ * @summary Update a line item (e.g. re-assign its category) after the receipt has been saved
+ */
+export const useUpdateReceiptItem = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateReceiptItem>>, TError,{receiptId: number;itemId: number;data: BodyType<ReceiptItemUpdate>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof updateReceiptItem>>,
+        TError,
+        {receiptId: number;itemId: number;data: BodyType<ReceiptItemUpdate>},
+        TContext
+      > => {
+      return useMutation(getUpdateReceiptItemMutationOptions(options));
     }
 
 export const getRunReconciliationUrl = () => {

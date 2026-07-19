@@ -168,6 +168,13 @@ export const GetTransactionResponse = zod.object({
 
 
 /**
+ * @summary List valid categories for receipt items (same list transactions use — defaults + user-created)
+ */
+export const ListReceiptCategoriesResponseItem = zod.string()
+export const ListReceiptCategoriesResponse = zod.array(ListReceiptCategoriesResponseItem)
+
+
+/**
  * @summary List all scanned receipts
  */
 export const ListReceiptsQueryParams = zod.object({
@@ -328,6 +335,17 @@ export const GetReceiptResponse = zod.object({
   "isTaxable": zod.boolean().optional(),
   "sortOrder": zod.number().optional()
 })),
+  "match": zod.union([zod.object({
+  "matchId": zod.number(),
+  "matchMethod": zod.string(),
+  "confirmed": zod.boolean(),
+  "transaction": zod.object({
+  "id": zod.string(),
+  "merchantName": zod.string().nullable(),
+  "amount": zod.number(),
+  "date": zod.string()
+})
+}).describe('The transaction this receipt is reconciled against, if any.'),zod.null()]).optional(),
   "createdAt": zod.string(),
   "updatedAt": zod.string()
 })
@@ -419,11 +437,42 @@ export const CreateReceiptItemBody = zod.object({
   "unitPrice": zod.number(),
   "lineTotal": zod.number(),
   "category": zod.string().nullish(),
-  "sku": zod.string().nullish(),
-  "isTaxable": zod.boolean().optional()
+  "sku": zod.string().nullish()
 })
 
 export const CreateReceiptItemResponse = zod.object({
+  "id": zod.number(),
+  "receiptId": zod.number(),
+  "description": zod.string(),
+  "quantity": zod.number(),
+  "unitPrice": zod.number(),
+  "lineTotal": zod.number(),
+  "category": zod.string().nullish(),
+  "sku": zod.string().nullish(),
+  "isTaxable": zod.boolean().optional(),
+  "sortOrder": zod.number().optional()
+})
+
+
+/**
+ * @summary Update a line item (e.g. re-assign its category) after the receipt has been saved
+ */
+export const UpdateReceiptItemParams = zod.object({
+  "receiptId": zod.coerce.number(),
+  "itemId": zod.coerce.number()
+})
+
+export const UpdateReceiptItemBody = zod.object({
+  "description": zod.string().optional(),
+  "quantity": zod.number().optional(),
+  "unitPrice": zod.number().optional(),
+  "lineTotal": zod.number().optional(),
+  "category": zod.string().nullish(),
+  "sku": zod.string().nullish(),
+  "isTaxable": zod.boolean().optional()
+}).describe('All fields optional — only fields present are updated.')
+
+export const UpdateReceiptItemResponse = zod.object({
   "id": zod.number(),
   "receiptId": zod.number(),
   "description": zod.string(),
