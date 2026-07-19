@@ -3,16 +3,18 @@ import multer from "multer";
 import path from "path";
 import { mkdirSync } from "fs";
 import { db } from "@workspace/db";
-import { scannedReceipts, receiptItems, receiptTransactionMatches } from "@workspace/db";
+import { scannedReceipts, receiptItems, receiptTransactionMatches, bankTransactions } from "@workspace/db";
 import { eq, and, gte, lte, like, sql } from "drizzle-orm";
 import {
   CreateReceiptBody,
   UpdateReceiptBody,
   CreateReceiptItemBody,
+  UpdateReceiptItemBody,
   ListReceiptsQueryParams,
   ListExpiringReceiptsQueryParams,
 } from "@workspace/api-zod";
 import { processReceipt } from "../services/receipt-ocr.js";
+import { getAllCategoryNames } from "../lib/categories.js";
 
 // Ensure uploads directory exists
 const uploadsDir = path.resolve(process.cwd(), "uploads");
@@ -181,6 +183,14 @@ router.post("/scan", upload.single("file"), async (req, res) => {
   }
 });
 
+// GET /receipts/categories — same category list transactions use (defaults +
+// user-created). Receipt items used to have their own separate, differently
+// named list (e.g. "Gas" vs transactions' "Gas & Fuel") that never matched
+// anything cash-flow reporting understood — this is the single shared list.
+router.get("/categories", async (_req, res) => {
+  res.json(await getAllCategoryNames());
+});
+
 // POST /receipts/confirm — user confirms extracted data, saves receipt + items
 router.post("/confirm", async (req, res) => {
   const { filePath, storeName, storeAddress, purchaseDate, subtotal, tax, total, paymentMethod, returnWindowDays, notes, items } = req.body;
@@ -188,6 +198,8 @@ router.post("/confirm", async (req, res) => {
   if (!filePath) {
     return void res.status(400).json({ error: "filePath is required" });
   }
+
+  const validCategories = await getAllCategoryNames();
 
   let returnDeadline: string | null = null;
   if (purchaseDate && returnWindowDays) {
@@ -221,13 +233,17 @@ router.post("/confirm", async (req, res) => {
   if (items && Array.isArray(items) && items.length > 0) {
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
+      // Silently drop an invalid/stale category rather than reject the whole
+      // receipt over one bad item field — matches how the rest of this route
+      // treats malformed optional fields (coerced to null, not a 400).
+      const category = item.category && validCategories.includes(item.category) ? item.category : null;
       await db.insert(receiptItems).values({
         receiptId: receipt.id,
         description: item.description || "Unknown item",
         quantity: Number(item.quantity) || 1,
         unitPrice: Number(item.unitPrice) || 0,
         lineTotal: Number(item.lineTotal) || 0,
-        category: item.category || null,
+        category,
         sortOrder: i,
       });
     }
@@ -275,13 +291,37 @@ router.get("/:receiptId", async (req, res) => {
   if (!row) return void res.status(404).json({ error: "Receipt not found" });
 
   const items = await db.select().from(receiptItems).where(eq(receiptItems.receiptId, id)).orderBy(receiptItems.sortOrder);
-  const match = await db
-    .select({ id: receiptTransactionMatches.id })
+
+  // Embed the matched transaction (if any) directly, rather than just a
+  // matchId — the receipt detail page needs to show what a receipt is
+  // reconciled against, not just whether it is.
+  const matchRows = await db
+    .select({
+      matchId: receiptTransactionMatches.id,
+      matchMethod: receiptTransactionMatches.matchMethod,
+      confirmed: receiptTransactionMatches.confirmed,
+      transaction: bankTransactions,
+    })
     .from(receiptTransactionMatches)
+    .innerJoin(bankTransactions, eq(receiptTransactionMatches.bankTransactionId, bankTransactions.id))
     .where(eq(receiptTransactionMatches.receiptId, id))
     .limit(1);
 
-  res.json({ ...serializeReceipt(row, match[0]?.id ?? null), items });
+  const match = matchRows[0]
+    ? {
+        matchId: matchRows[0].matchId,
+        matchMethod: matchRows[0].matchMethod,
+        confirmed: matchRows[0].confirmed,
+        transaction: {
+          id: matchRows[0].transaction.id,
+          merchantName: matchRows[0].transaction.merchantName ?? matchRows[0].transaction.merchantNameRaw,
+          amount: matchRows[0].transaction.amount,
+          date: matchRows[0].transaction.date,
+        },
+      }
+    : null;
+
+  res.json({ ...serializeReceipt(row, match?.matchId ?? null), items, match });
 });
 
 router.patch("/:receiptId", async (req, res) => {
@@ -338,12 +378,49 @@ router.post("/:receiptId/items", async (req, res) => {
   const parsed = CreateReceiptItemBody.safeParse(req.body);
   if (!parsed.success) return void res.status(400).json({ error: "Invalid input" });
 
+  if (parsed.data.category) {
+    const validCategories = await getAllCategoryNames();
+    if (!validCategories.includes(parsed.data.category)) {
+      return void res.status(400).json({ error: "Invalid category", validCategories });
+    }
+  }
+
   const [item] = await db
     .insert(receiptItems)
     .values({ receiptId: Number(req.params.receiptId), ...parsed.data })
     .returning();
 
   res.status(201).json(item);
+});
+
+// PATCH /receipts/:receiptId/items/:itemId — edit a line item after the
+// receipt has been saved (most commonly: re-assign its category). The
+// confirm-time flow was the only way to set an item's category before this;
+// there was no way to fix a miscategorized item afterward.
+router.patch("/:receiptId/items/:itemId", async (req, res) => {
+  const parsed = UpdateReceiptItemBody.safeParse(req.body);
+  if (!parsed.success) return void res.status(400).json({ error: "Invalid input" });
+
+  if (parsed.data.category) {
+    const validCategories = await getAllCategoryNames();
+    if (!validCategories.includes(parsed.data.category)) {
+      return void res.status(400).json({ error: "Invalid category", validCategories });
+    }
+  }
+
+  const [item] = await db
+    .update(receiptItems)
+    .set(parsed.data)
+    .where(
+      and(
+        eq(receiptItems.id, Number(req.params.itemId)),
+        eq(receiptItems.receiptId, Number(req.params.receiptId))
+      )
+    )
+    .returning();
+
+  if (!item) return void res.status(404).json({ error: "Item not found" });
+  res.json(item);
 });
 
 export default router;

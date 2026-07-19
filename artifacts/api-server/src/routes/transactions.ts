@@ -1,10 +1,12 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
-import { bankTransactions, accounts, institutions, receiptTransactionMatches, userCategories } from "@workspace/db";
+import { bankTransactions, accounts, institutions, receiptTransactionMatches } from "@workspace/db";
 import { eq, and, gte, lte, like, sql, isNull } from "drizzle-orm";
 import { ListTransactionsQueryParams } from "@workspace/api-zod";
 import { getPlaidAdapter } from "../services/plaid.js";
-import { categorizeTransactions, CATEGORIES, type TransactionInput } from "../services/categorizer.js";
+import { categorizeTransactions, type TransactionInput } from "../services/categorizer.js";
+import { getAllCategoryNames } from "../lib/categories.js";
+import { aggregateByCategory } from "../lib/category-aggregation.js";
 
 const router = Router();
 
@@ -277,8 +279,7 @@ router.post("/bulk-categorize", async (req, res) => {
   }
 
   // Validate category
-  const userCats = await db.select({ name: userCategories.name }).from(userCategories);
-  const allValid = [...CATEGORIES, ...userCats.map((c) => c.name)];
+  const allValid = await getAllCategoryNames();
   if (!allValid.includes(userCategory)) {
     return void res.status(400).json({ error: "Invalid category" });
   }
@@ -345,81 +346,21 @@ router.post("/categorize", async (_req, res) => {
 
 // GET /transactions/categories — list available categories (default + user-created)
 router.get("/categories", async (_req, res) => {
-  const userCats = await db.select().from(userCategories).orderBy(userCategories.name);
-  const userCatNames = userCats.map((c) => c.name);
-  // Merge: defaults first, then user-created (deduped)
-  const all = [...CATEGORIES, ...userCatNames.filter((n) => !CATEGORIES.includes(n as any))];
-  res.json(all);
+  res.json(await getAllCategoryNames());
 });
 
 // GET /transactions/spending-by-category — aggregated spending by category
 router.get("/spending-by-category", async (req, res) => {
   const { from, to } = req.query as { from?: string; to?: string };
-
-  const conditions = [
-    sql`${bankTransactions.userCategory} IS NOT NULL`,
-    sql`${bankTransactions.amount} > 0`,
-    eq(bankTransactions.ignored, false),
-    eq(institutions.userId, req.user!.userId),
-  ];
-
-  if (from) conditions.push(gte(bankTransactions.date, from));
-  if (to) conditions.push(lte(bankTransactions.date, to));
-
-  const rows = await db
-    .select({
-      category: bankTransactions.userCategory,
-      total: sql<number>`SUM(${bankTransactions.amount})`,
-      count: sql<number>`COUNT(*)`,
-    })
-    .from(bankTransactions)
-    .innerJoin(accounts, eq(bankTransactions.accountId, accounts.id))
-    .innerJoin(institutions, eq(accounts.institutionId, institutions.id))
-    .where(and(...conditions))
-    .groupBy(bankTransactions.userCategory);
-
-  res.json(
-    rows.map((r) => ({
-      category: r.category ?? "Other",
-      total: Number(r.total) || 0,
-      count: Number(r.count) || 0,
-    }))
-  );
+  const rows = await aggregateByCategory({ userId: req.user!.userId, from, to, direction: "spending" });
+  res.json(rows);
 });
 
 // GET /transactions/earnings-by-category — aggregated earnings (income) by category
 router.get("/earnings-by-category", async (req, res) => {
   const { from, to } = req.query as { from?: string; to?: string };
-
-  const conditions = [
-    sql`${bankTransactions.userCategory} IS NOT NULL`,
-    sql`${bankTransactions.amount} < 0`,
-    eq(bankTransactions.ignored, false),
-    eq(institutions.userId, req.user!.userId),
-  ];
-
-  if (from) conditions.push(gte(bankTransactions.date, from));
-  if (to) conditions.push(lte(bankTransactions.date, to));
-
-  const rows = await db
-    .select({
-      category: bankTransactions.userCategory,
-      total: sql<number>`SUM(ABS(${bankTransactions.amount}))`,
-      count: sql<number>`COUNT(*)`,
-    })
-    .from(bankTransactions)
-    .innerJoin(accounts, eq(bankTransactions.accountId, accounts.id))
-    .innerJoin(institutions, eq(accounts.institutionId, institutions.id))
-    .where(and(...conditions))
-    .groupBy(bankTransactions.userCategory);
-
-  res.json(
-    rows.map((r) => ({
-      category: r.category ?? "Other",
-      total: Number(r.total) || 0,
-      count: Number(r.count) || 0,
-    }))
-  );
+  const rows = await aggregateByCategory({ userId: req.user!.userId, from, to, direction: "earnings" });
+  res.json(rows);
 });
 
 // PATCH /transactions/:transactionId — update category or ignored status
@@ -446,8 +387,7 @@ router.patch("/:transactionId", async (req, res) => {
 
   if (userCategory !== undefined) {
     // Accept both default and user-created categories
-    const userCats = await db.select({ name: userCategories.name }).from(userCategories);
-    const allValid = [...CATEGORIES, ...userCats.map((c) => c.name)];
+    const allValid = await getAllCategoryNames();
     if (!allValid.includes(userCategory)) {
       return void res.status(400).json({ error: "Invalid category", validCategories: allValid });
     }
