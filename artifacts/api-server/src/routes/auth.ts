@@ -151,7 +151,11 @@ router.get("/google/callback", async (req, res) => {
   const token = signToken({ userId: user.id, email: user.email });
 
   // Redirect to app with token in URL fragment
-  res.redirect(`/finance/#google_token=${token}`);
+  // Redirect to app with token in URL fragment (client handles it).
+  // FRONTEND_BASE_PATH defaults to "/" for standalone deploys (Cloud Run);
+  // set to "/finance/" when running behind the proxy.
+  const basePath = process.env.FRONTEND_BASE_PATH || "/";
+  res.redirect(`${basePath}#google_token=${token}`);
 });
 
 export default router;
