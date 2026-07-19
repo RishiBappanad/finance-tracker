@@ -161,6 +161,24 @@ export interface ReceiptDetail {
   updatedAt: string;
 }
 
+export type ReceiptSuggestionsSuggestionsItem = {
+  bankTransactionId: string;
+  /** @nullable */
+  merchantName: string | null;
+  amount: number;
+  date: string;
+  confidenceScore: number;
+};
+
+/**
+ * Candidate transactions for an unmatched receipt, from the fuzzy-matching engine. Never implies a match has been created — the frontend must call POST /matches to actually link one.
+ */
+export interface ReceiptSuggestions {
+  /** auto_matched | needs_review | unmatched */
+  status: string;
+  suggestions: ReceiptSuggestionsSuggestionsItem[];
+}
+
 export interface ReceiptInput {
   sourceFilePath: string;
   ocrEngine: string;

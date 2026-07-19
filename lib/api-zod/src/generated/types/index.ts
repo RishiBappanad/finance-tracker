@@ -29,6 +29,8 @@ export * from './receiptItemInput';
 export * from './receiptItemUpdate';
 export * from './receiptMatchSummary';
 export * from './receiptMatchSummaryTransaction';
+export * from './receiptSuggestions';
+export * from './receiptSuggestionsSuggestionsItem';
 export * from './receiptUpdate';
 export * from './reconcileResult';
 export * from './syncResult';

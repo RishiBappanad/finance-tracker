@@ -360,6 +360,31 @@ paths:
         "204":
           description: Deleted
 
+  /receipts/{receiptId}/suggestions:
+    get:
+      operationId: getReceiptSuggestions
+      tags: [receipts]
+      summary: Re-run the matcher for an already-saved, unmatched receipt (read-only)
+      parameters:
+        - name: receiptId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Match suggestions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReceiptSuggestions"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /receipts/{receiptId}/items:
     get:
       operationId: listReceiptItems
@@ -776,6 +801,31 @@ components:
               type: number
             date:
               type: string
+
+    ReceiptSuggestions:
+      type: object
+      description: Candidate transactions for an unmatched receipt, from the fuzzy-matching engine. Never implies a match has been created — the frontend must call POST /matches to actually link one.
+      required: [status, suggestions]
+      properties:
+        status:
+          type: string
+          description: "auto_matched | needs_review | unmatched"
+        suggestions:
+          type: array
+          items:
+            type: object
+            required: [bankTransactionId, merchantName, amount, date, confidenceScore]
+            properties:
+              bankTransactionId:
+                type: string
+              merchantName:
+                type: ["string", "null"]
+              amount:
+                type: number
+              date:
+                type: string
+              confidenceScore:
+                type: number
 
     ReceiptInput:
       type: object

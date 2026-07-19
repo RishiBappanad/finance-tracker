@@ -403,6 +403,25 @@ export const DeleteReceiptResponse = zod.void()
 
 
 /**
+ * @summary Re-run the matcher for an already-saved, unmatched receipt (read-only)
+ */
+export const GetReceiptSuggestionsParams = zod.object({
+  "receiptId": zod.coerce.number()
+})
+
+export const GetReceiptSuggestionsResponse = zod.object({
+  "status": zod.string().describe('auto_matched | needs_review | unmatched'),
+  "suggestions": zod.array(zod.object({
+  "bankTransactionId": zod.string(),
+  "merchantName": zod.string().nullable(),
+  "amount": zod.number(),
+  "date": zod.string(),
+  "confidenceScore": zod.number()
+}))
+}).describe('Candidate transactions for an unmatched receipt, from the fuzzy-matching engine. Never implies a match has been created — the frontend must call POST \/matches to actually link one.')
+
+
+/**
  * @summary List line items for a receipt
  */
 export const ListReceiptItemsParams = zod.object({

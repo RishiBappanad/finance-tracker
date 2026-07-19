@@ -40,6 +40,7 @@ import type {
   ReceiptItem,
   ReceiptItemInput,
   ReceiptItemUpdate,
+  ReceiptSuggestions,
   ReceiptUpdate,
   ReconcileResult,
   SyncResult,
@@ -1361,6 +1362,83 @@ export const useDeleteReceipt = <TError = ErrorType<unknown>,
       > => {
       return useMutation(getDeleteReceiptMutationOptions(options));
     }
+
+export const getGetReceiptSuggestionsUrl = (receiptId: number,) => {
+
+
+
+
+  return `/api/receipts/${receiptId}/suggestions`
+}
+
+/**
+ * @summary Re-run the matcher for an already-saved, unmatched receipt (read-only)
+ */
+export const getReceiptSuggestions = async (receiptId: number, options?: RequestInit): Promise<ReceiptSuggestions> => {
+
+  return customFetch<ReceiptSuggestions>(getGetReceiptSuggestionsUrl(receiptId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetReceiptSuggestionsQueryKey = (receiptId: number,) => {
+    return [
+    `/api/receipts/${receiptId}/suggestions`
+    ] as const;
+    }
+
+
+export const getGetReceiptSuggestionsQueryOptions = <TData = Awaited<ReturnType<typeof getReceiptSuggestions>>, TError = ErrorType<ErrorResponse>>(receiptId: number, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getReceiptSuggestions>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetReceiptSuggestionsQueryKey(receiptId);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getReceiptSuggestions>>> = ({ signal }) => getReceiptSuggestions(receiptId, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: receiptId !== null && receiptId !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getReceiptSuggestions>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetReceiptSuggestionsQueryResult = NonNullable<Awaited<ReturnType<typeof getReceiptSuggestions>>>
+export type GetReceiptSuggestionsQueryError = ErrorType<ErrorResponse>
+
+
+/**
+ * @summary Re-run the matcher for an already-saved, unmatched receipt (read-only)
+ */
+
+export function useGetReceiptSuggestions<TData = Awaited<ReturnType<typeof getReceiptSuggestions>>, TError = ErrorType<ErrorResponse>>(
+ receiptId: number, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getReceiptSuggestions>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetReceiptSuggestionsQueryOptions(receiptId,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
 
 export const getListReceiptItemsUrl = (receiptId: number,) => {
 
