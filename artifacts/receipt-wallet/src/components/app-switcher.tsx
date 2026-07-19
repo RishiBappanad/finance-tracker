@@ -17,15 +17,28 @@ const ICON_MAP: Record<string, LucideIcon> = {
 
 const CURRENT_APP = "finance";
 
-export function AppSwitcher() {
+// The app registry lives on trackstack-auth (every app already depends on
+// it for identity), not a relative /apps.json — each TrackStack app is now
+// deployed standalone on its own origin (Cloud Run), so a same-origin
+// static file can't be the source of truth for cross-origin links anymore.
+const TRACKSTACK_AUTH_URL = import.meta.env.VITE_TRACKSTACK_AUTH_URL ?? "";
+
+function useAppRegistry(): AppEntry[] {
   const [apps, setApps] = useState<AppEntry[]>([]);
 
   useEffect(() => {
-    fetch("/apps.json")
+    if (!TRACKSTACK_AUTH_URL) return;
+    fetch(`${TRACKSTACK_AUTH_URL}/apps`)
       .then((r) => r.json())
       .then(setApps)
       .catch(() => {});
   }, []);
+
+  return apps;
+}
+
+export function AppSwitcher() {
+  const apps = useAppRegistry();
 
   if (apps.length === 0) return null;
 
@@ -55,14 +68,7 @@ export function AppSwitcher() {
 }
 
 export function MobileAppSwitcher() {
-  const [apps, setApps] = useState<AppEntry[]>([]);
-
-  useEffect(() => {
-    fetch("/apps.json")
-      .then((r) => r.json())
-      .then(setApps)
-      .catch(() => {});
-  }, []);
+  const apps = useAppRegistry();
 
   if (apps.length === 0) return null;
 

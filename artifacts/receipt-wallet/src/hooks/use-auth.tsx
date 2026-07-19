@@ -2,6 +2,14 @@ import { createContext, useContext, useState, useEffect, type ReactNode } from "
 import { API_BASE } from "@/lib/api";
 import { setAuthTokenGetter } from "@workspace/api-client-react";
 
+// Identity (registration, login, Google OAuth) is owned by trackstack-auth,
+// not this app's own backend — login/register talk to trackstack-auth
+// directly instead of a local /api/auth/* endpoint, so the same account
+// works across every TrackStack app. /me still calls this app's own API
+// (kept locally — see routes/auth.ts) to fetch this app's view of the
+// current user's profile without an extra network hop.
+const TRACKSTACK_AUTH_URL = import.meta.env.VITE_TRACKSTACK_AUTH_URL ?? "";
+
 interface User {
   id: number;
   email: string;
@@ -55,7 +63,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const login = async (email: string, password: string) => {
-    const res = await fetch(`${API_BASE}/api/auth/login`, {
+    const res = await fetch(`${TRACKSTACK_AUTH_URL}/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password }),
@@ -69,11 +77,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const data = await res.json();
     localStorage.setItem(TOKEN_KEY, data.token);
     setToken(data.token);
-    setUser(data.user);
+    setUser(data.account);
   };
 
   const register = async (email: string, password: string, name?: string) => {
-    const res = await fetch(`${API_BASE}/api/auth/register`, {
+    const res = await fetch(`${TRACKSTACK_AUTH_URL}/register`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password, name }),
@@ -87,7 +95,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const data = await res.json();
     localStorage.setItem(TOKEN_KEY, data.token);
     setToken(data.token);
-    setUser(data.user);
+    setUser(data.account);
   };
 
   const logout = () => {

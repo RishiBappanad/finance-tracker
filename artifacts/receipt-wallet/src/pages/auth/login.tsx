@@ -5,7 +5,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Wallet, Loader2 } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
-import { API_BASE } from "@/lib/api";
+
+const TRACKSTACK_AUTH_URL = import.meta.env.VITE_TRACKSTACK_AUTH_URL ?? "";
 
 function GoogleIcon() {
   return (
@@ -43,7 +44,8 @@ export default function Login() {
 
   const handleGoogleLogin = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/auth/google`);
+      const returnTo = window.location.origin;
+      const res = await fetch(`${TRACKSTACK_AUTH_URL}/google?returnTo=${encodeURIComponent(returnTo)}`);
       const data = await res.json();
       if (data.url) window.location.href = data.url;
     } catch {
