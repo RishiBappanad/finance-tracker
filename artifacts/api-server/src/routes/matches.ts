@@ -4,6 +4,8 @@ import {
   receiptTransactionMatches,
   scannedReceipts,
   bankTransactions,
+  accounts,
+  institutions,
 } from "@workspace/db";
 import { eq, and, isNull, sql } from "drizzle-orm";
 import { CreateMatchBody, UpdateMatchBody, ListMatchesQueryParams } from "@workspace/api-zod";
@@ -25,9 +27,16 @@ function serializeMatch(m: any) {
   };
 }
 
-// POST /reconcile — run auto-reconciliation
-router.post("/run", async (_req, res) => {
-  // Get all unmatched receipts
+// POST /reconcile — run auto-reconciliation for the current user's own
+// receipts and transactions only. (Previously this queried unmatched
+// receipts/transactions with no user filter at all — any user's receipt
+// could have been auto-matched against another user's bank transaction.
+// Fixed alongside wiring auto-match into POST /receipts/confirm, since
+// both paths needed the same user-scoped transaction lookup.)
+router.post("/run", async (req, res) => {
+  const userId = req.user!.userId;
+
+  // Get this user's unmatched receipts
   const matchedReceiptIds = db
     .select({ id: receiptTransactionMatches.receiptId })
     .from(receiptTransactionMatches);
@@ -35,17 +44,35 @@ router.post("/run", async (_req, res) => {
   const unmatchedReceipts = await db
     .select()
     .from(scannedReceipts)
-    .where(sql`${scannedReceipts.id} NOT IN (${matchedReceiptIds})`);
+    .where(
+      and(
+        eq(scannedReceipts.userId, userId),
+        sql`${scannedReceipts.id} NOT IN (${matchedReceiptIds})`
+      )
+    );
 
-  // Get all unmatched transactions
+  // Get this user's unmatched transactions
   const matchedTxnIds = db
     .select({ id: receiptTransactionMatches.bankTransactionId })
     .from(receiptTransactionMatches);
 
   const unmatchedTxns = await db
-    .select()
+    .select({
+      id: bankTransactions.id,
+      amount: bankTransactions.amount,
+      date: bankTransactions.date,
+      merchantName: bankTransactions.merchantName,
+      merchantNameRaw: bankTransactions.merchantNameRaw,
+    })
     .from(bankTransactions)
-    .where(sql`${bankTransactions.id} NOT IN (${matchedTxnIds})`);
+    .innerJoin(accounts, eq(bankTransactions.accountId, accounts.id))
+    .innerJoin(institutions, eq(accounts.institutionId, institutions.id))
+    .where(
+      and(
+        eq(institutions.userId, userId),
+        sql`${bankTransactions.id} NOT IN (${matchedTxnIds})`
+      )
+    );
 
   const txnCandidates: TransactionCandidate[] = unmatchedTxns.map((t) => ({
     id: t.id,

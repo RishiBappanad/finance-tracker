@@ -15,6 +15,7 @@ import {
 } from "@workspace/api-zod";
 import { processReceipt } from "../services/receipt-ocr.js";
 import { getAllCategoryNames } from "../lib/categories.js";
+import { reconcileOneReceipt, computeReceiptMatch } from "../services/receipt-matcher.js";
 
 // Ensure uploads directory exists
 const uploadsDir = path.resolve(process.cwd(), "uploads");
@@ -249,7 +250,31 @@ router.post("/confirm", async (req, res) => {
     }
   }
 
-  res.status(201).json(serializeReceipt(receipt));
+  // Immediately try to match this receipt against the user's own unmatched
+  // bank transactions — previously the only way a receipt got matched was a
+  // separate manual trip to the Reconcile page (or its bulk "run" button),
+  // so a receipt Gemini just parsed sat unmatched until the user remembered
+  // to go do that. auto_matched creates a real match row; needs_review
+  // candidates are returned as suggestions for the frontend to show without
+  // committing to anything the user hasn't confirmed.
+  const { outcome, createdMatch } = await reconcileOneReceipt(
+    { id: receipt.id, total: receipt.total, purchaseDate: receipt.purchaseDate, storeName: receipt.storeName },
+    req.user!.userId
+  );
+
+  res.status(201).json({
+    ...serializeReceipt(receipt, createdMatch?.id ?? null),
+    match: {
+      status: outcome.status,
+      suggestions: outcome.candidates.map((c) => ({
+        bankTransactionId: c.transaction.id,
+        merchantName: c.transaction.merchantName,
+        amount: c.transaction.amount,
+        date: c.transaction.date,
+        confidenceScore: c.composite,
+      })),
+    },
+  });
 });
 
 router.post("/", async (req, res) => {
@@ -322,6 +347,42 @@ router.get("/:receiptId", async (req, res) => {
     : null;
 
   res.json({ ...serializeReceipt(row, match?.matchId ?? null), items, match });
+});
+
+// GET /receipts/:receiptId/suggestions — re-run the matcher for an already-
+// saved, still-unmatched receipt (read-only, creates no match). Lets the
+// receipt detail page show candidate transactions for the user to pick from
+// when the automatic match at confirm-time didn't reach auto_matched
+// confidence.
+router.get("/:receiptId/suggestions", async (req, res) => {
+  const id = Number(req.params.receiptId);
+  const [row] = await db.select().from(scannedReceipts).where(eq(scannedReceipts.id, id)).limit(1);
+  if (!row) return void res.status(404).json({ error: "Receipt not found" });
+
+  const existingMatch = await db
+    .select({ id: receiptTransactionMatches.id })
+    .from(receiptTransactionMatches)
+    .where(eq(receiptTransactionMatches.receiptId, id))
+    .limit(1);
+  if (existingMatch.length > 0) {
+    return void res.json({ status: "auto_matched", suggestions: [] });
+  }
+
+  const outcome = await computeReceiptMatch(
+    { id: row.id, total: row.total, purchaseDate: row.purchaseDate, storeName: row.storeName },
+    req.user!.userId
+  );
+
+  res.json({
+    status: outcome.status,
+    suggestions: outcome.candidates.map((c) => ({
+      bankTransactionId: c.transaction.id,
+      merchantName: c.transaction.merchantName,
+      amount: c.transaction.amount,
+      date: c.transaction.date,
+      confidenceScore: c.composite,
+    })),
+  });
 });
 
 router.patch("/:receiptId", async (req, res) => {

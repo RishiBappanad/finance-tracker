@@ -139,8 +139,23 @@ export default function Receipts() {
 
       if (!res.ok) throw new Error("Failed to save receipt");
 
+      const saved = await res.json();
       queryClient.invalidateQueries({ queryKey: ["/api/receipts"] });
-      toast({ title: "Receipt saved", description: data.storeName || "Receipt confirmed" });
+
+      // Reflect what actually happened with matching, since a receipt is
+      // never auto-confirmed without the user looking at it — auto_matched
+      // still needs confirmation on the receipt detail page (see
+      // ReceiptDetail's Confirm/Not a match buttons), it's just already
+      // linked to a candidate transaction.
+      const matchStatus = saved?.match?.status;
+      if (matchStatus === "auto_matched") {
+        toast({ title: "Receipt saved", description: "Matched to a transaction — review to confirm." });
+      } else if (matchStatus === "needs_review" && saved?.match?.suggestions?.length > 0) {
+        toast({ title: "Receipt saved", description: "A few possible matches found — pick one on the receipt page." });
+      } else {
+        toast({ title: "Receipt saved", description: data.storeName || "Receipt confirmed" });
+      }
+
       setScanResult(null);
       setShowManual(false);
     } catch (e: any) {

@@ -291,6 +291,201 @@ describe("GET /api/receipts/:receiptId/items", () => {
   });
 });
 
+// ── Auto-match on confirm ──────────────────────────────────────────────────
+// POST /confirm now runs the fuzzy-matching engine against the user's own
+// unmatched transactions immediately after saving, instead of leaving every
+// newly-scanned receipt unmatched until a separate manual trip to the
+// Reconcile page. auto_matched creates a real (unconfirmed) match row;
+// needs_review/unmatched surface suggestions without writing anything.
+
+describe("POST /api/receipts/confirm — auto-match wiring", () => {
+  it("creates an unconfirmed match when the matcher returns auto_matched", async () => {
+    const receipt = {
+      id: 10,
+      userId: 1,
+      sourceFilePath: "/uploads/target.jpg",
+      ocrEngine: "gemini",
+      storeName: "TARGET",
+      purchaseDate: "2026-07-15",
+      total: 42.5,
+      processingStatus: "completed",
+      ocrConfidence: 1,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const perfectTxn = {
+      id: "txn-perfect",
+      amount: 42.5,
+      date: "2026-07-15",
+      merchantName: "TARGET",
+      merchantNameRaw: "TARGET",
+    };
+    const createdMatch = {
+      id: 1,
+      receiptId: 10,
+      bankTransactionId: "txn-perfect",
+      matchMethod: "auto",
+      confidenceScore: 1,
+      scoreBreakdown: JSON.stringify({ amount: 1, date: 1, merchant: 1 }),
+      confirmed: false,
+    };
+
+    enqueue([]); // requireAuth's ensureLocalUser insert
+    enqueue([]); // getAllCategoryNames' select from user_categories
+    enqueue([receipt]); // insert receipt, returning
+    enqueue([perfectTxn]); // getUnmatchedTransactionsForUser select
+    enqueue([createdMatch]); // persistAutoMatch insert, returning
+
+    const res = await request(app)
+      .post("/api/receipts/confirm")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ filePath: "/uploads/target.jpg", storeName: "TARGET", purchaseDate: "2026-07-15", total: "42.50" });
+
+    expect(res.status).toBe(201);
+    expect(res.body.matchId).toBe(1);
+    expect(res.body.match.status).toBe("auto_matched");
+    expect(res.body.match.suggestions[0].bankTransactionId).toBe("txn-perfect");
+  });
+
+  it("does not create a match when the matcher returns needs_review, but reports suggestions", async () => {
+    const receipt = {
+      id: 11,
+      userId: 1,
+      sourceFilePath: "/uploads/unknown.jpg",
+      ocrEngine: "gemini",
+      storeName: null,
+      purchaseDate: "2026-07-16",
+      total: 89.75,
+      processingStatus: "completed",
+      ocrConfidence: 1,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const partialTxn = {
+      id: "txn-partial",
+      amount: 89.75,
+      date: "2026-07-16",
+      merchantName: null,
+      merchantNameRaw: null,
+    };
+
+    enqueue([]); // requireAuth's ensureLocalUser insert
+    enqueue([]); // getAllCategoryNames
+    enqueue([receipt]); // insert receipt
+    enqueue([partialTxn]); // getUnmatchedTransactionsForUser select
+    // No insert enqueued for persistAutoMatch — it must not be called for needs_review
+
+    const res = await request(app)
+      .post("/api/receipts/confirm")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ filePath: "/uploads/unknown.jpg", purchaseDate: "2026-07-16", total: "89.75" });
+
+    expect(res.status).toBe(201);
+    expect(res.body.matchId).toBeNull();
+    expect(res.body.match.status).toBe("needs_review");
+    expect(res.body.match.suggestions).toHaveLength(1);
+    expect(res.body.match.suggestions[0].bankTransactionId).toBe("txn-partial");
+  });
+
+  it("reports unmatched with no suggestions when there are no candidate transactions", async () => {
+    const receipt = {
+      id: 12,
+      userId: 1,
+      sourceFilePath: "/uploads/lonely.jpg",
+      ocrEngine: "gemini",
+      storeName: "NOWHERE",
+      purchaseDate: "2026-07-17",
+      total: 12.0,
+      processingStatus: "completed",
+      ocrConfidence: 1,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    enqueue([]);
+    enqueue([]);
+    enqueue([receipt]);
+    enqueue([]); // no candidate transactions at all
+
+    const res = await request(app)
+      .post("/api/receipts/confirm")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ filePath: "/uploads/lonely.jpg", storeName: "NOWHERE", purchaseDate: "2026-07-17", total: "12.00" });
+
+    expect(res.status).toBe(201);
+    expect(res.body.matchId).toBeNull();
+    expect(res.body.match.status).toBe("unmatched");
+    expect(res.body.match.suggestions).toHaveLength(0);
+  });
+});
+
+// ── GET /api/receipts/:receiptId/suggestions ──────────────────────────────
+
+describe("GET /api/receipts/:receiptId/suggestions", () => {
+  it("returns suggestions without creating a match, for an unmatched receipt", async () => {
+    const receipt = {
+      id: 20,
+      userId: 1,
+      total: 50,
+      purchaseDate: "2026-07-10",
+      storeName: "SHOP",
+    };
+    const candidateTxn = {
+      id: "txn-candidate",
+      amount: 50,
+      date: "2026-07-10",
+      merchantName: "SHOP",
+      merchantNameRaw: "SHOP",
+    };
+
+    enqueue([]); // requireAuth's ensureLocalUser insert
+    enqueue([receipt]); // GET /:receiptId select
+    enqueue([]); // existing-match check, empty -> proceed to compute
+    enqueue([candidateTxn]); // getUnmatchedTransactionsForUser select
+    // No insert enqueued — this endpoint must never persist a match
+
+    const res = await request(app)
+      .get("/api/receipts/20/suggestions")
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("auto_matched");
+    expect(res.body.suggestions[0].bankTransactionId).toBe("txn-candidate");
+  });
+
+  it("returns auto_matched with no suggestions when a match already exists (does not recompute)", async () => {
+    const receipt = { id: 21, userId: 1, total: 50, purchaseDate: "2026-07-10", storeName: "SHOP" };
+
+    enqueue([]); // requireAuth's ensureLocalUser insert
+    enqueue([receipt]); // GET /:receiptId select
+    enqueue([{ id: 5 }]); // existing-match check finds a match -> short-circuit
+
+    const res = await request(app)
+      .get("/api/receipts/21/suggestions")
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("auto_matched");
+    expect(res.body.suggestions).toHaveLength(0);
+  });
+
+  it("returns 404 for a nonexistent receipt", async () => {
+    enqueue([]); // requireAuth's ensureLocalUser insert
+    enqueue([]); // GET /:receiptId select, empty
+
+    const res = await request(app)
+      .get("/api/receipts/9999/suggestions")
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 401 without auth", async () => {
+    const res = await request(app).get("/api/receipts/20/suggestions");
+    expect(res.status).toBe(401);
+  });
+});
+
 // ── Per-item category assignment ─────────────────────────────────────────
 
 describe("Receipt item category assignment", () => {
