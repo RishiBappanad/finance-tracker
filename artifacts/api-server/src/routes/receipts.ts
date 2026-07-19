@@ -252,6 +252,7 @@ router.post("/", async (req, res) => {
   const [row] = await db
     .insert(scannedReceipts)
     .values({
+      userId: req.user!.userId,
       sourceFilePath,
       sourceFileHash: sourceFileHash ?? null,
       ocrEngine,
