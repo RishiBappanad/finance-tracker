@@ -43,6 +43,7 @@ const CATEGORY_COLORS: Record<string, string> = {
   "Fees & Charges": "#dc2626",
   "Investment": "#059669",
   "Other": "#9ca3af",
+  "Uncategorized": "#d4d4d8",
 };
 
 type ViewMode = "spending" | "earnings";
