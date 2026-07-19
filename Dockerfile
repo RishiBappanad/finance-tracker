@@ -32,8 +32,10 @@ RUN pnpm --filter @workspace/api-server run build
 # for proxy mode: docker build --build-arg BASE_PATH=/finance/ --build-arg API_BASE=/finance .
 ARG BASE_PATH=/
 ARG API_BASE=
+ARG TRACKSTACK_AUTH_URL=
 ENV VITE_BASE_PATH=${BASE_PATH}
 ENV VITE_API_BASE=${API_BASE}
+ENV VITE_TRACKSTACK_AUTH_URL=${TRACKSTACK_AUTH_URL}
 RUN pnpm --filter @workspace/receipt-wallet run build
 
 # Move frontend output to /app/public (where app.ts expects it via process.cwd())
