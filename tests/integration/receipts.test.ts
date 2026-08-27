@@ -243,6 +243,7 @@ describe("POST /api/receipts/:receiptId/items", () => {
       sortOrder: 0,
     };
     enqueue([]); // requireAuth's ensureLocalUser insert
+    enqueue([{ id: 1 }]); // receiptBelongsToUser ownership check
     enqueue([]); // getAllCategoryNames' select from user_categories ("Groceries" is a default, valid either way)
     enqueue([item]);
 
@@ -264,6 +265,8 @@ describe("POST /api/receipts/:receiptId/items", () => {
   });
 
   it("returns 400 with invalid item data", async () => {
+    enqueue([]); // requireAuth's ensureLocalUser insert
+    enqueue([{ id: 1 }]); // receiptBelongsToUser ownership check (runs before body validation)
     const res = await request(app)
       .post("/api/receipts/1/items")
       .set("Authorization", `Bearer ${token}`)
@@ -275,6 +278,7 @@ describe("POST /api/receipts/:receiptId/items", () => {
 describe("GET /api/receipts/:receiptId/items", () => {
   it("returns items for a receipt", async () => {
     enqueue([]); // requireAuth's ensureLocalUser insert
+    enqueue([{ id: 1 }]); // receiptBelongsToUser ownership check
     enqueue([
       { id: 1, receiptId: 1, description: "Item A", quantity: 1, unitPrice: 10, lineTotal: 10, category: "Food & Dining", sortOrder: 0 },
       { id: 2, receiptId: 1, description: "Item B", quantity: 2, unitPrice: 5, lineTotal: 10, category: "Groceries", sortOrder: 1 },

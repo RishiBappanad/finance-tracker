@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
 import { bankTransactions, accounts, institutions, receiptTransactionMatches } from "@workspace/db";
-import { eq, and, gte, lte, like, sql, isNull } from "drizzle-orm";
+import { eq, and, gte, lte, like, sql, isNull, inArray } from "drizzle-orm";
 import { ListTransactionsQueryParams } from "@workspace/api-zod";
 import { getPlaidAdapter } from "../services/plaid.js";
 import { categorizeTransactions, type TransactionInput } from "../services/categorizer.js";
@@ -31,8 +31,13 @@ function serializeTxn(t: any, matchId?: number | null) {
   };
 }
 
-// GET /transactions/ignored — list all hidden/ignored transactions
-router.get("/ignored", async (_req, res) => {
+// GET /transactions/ignored — list the CALLING USER's hidden/ignored
+// transactions. SECURITY FIX (2026-08-27): this previously had no user
+// filter at all -- eq(bankTransactions.ignored, true) with no join back
+// to institutions.userId, so it returned every user's ignored
+// transactions to any authenticated caller. Confirmed exploited: the
+// frontend's Transactions page calls this directly.
+router.get("/ignored", async (req, res) => {
   const rows = await db
     .select({
       id: bankTransactions.id,
@@ -52,14 +57,18 @@ router.get("/ignored", async (_req, res) => {
       createdAt: bankTransactions.createdAt,
     })
     .from(bankTransactions)
-    .leftJoin(accounts, eq(bankTransactions.accountId, accounts.id))
-    .where(eq(bankTransactions.ignored, true))
+    .innerJoin(accounts, eq(bankTransactions.accountId, accounts.id))
+    .innerJoin(institutions, eq(accounts.institutionId, institutions.id))
+    .where(and(eq(bankTransactions.ignored, true), eq(institutions.userId, req.user!.userId)))
     .orderBy(bankTransactions.date);
 
   res.json(rows.map((r) => serializeTxn(r)));
 });
 
-router.get("/unmatched", async (_req, res) => {
+// SECURITY FIX (2026-08-27): same missing-filter bug as /ignored above --
+// this returned every user's unmatched transactions to any caller.
+router.get("/unmatched", async (req, res) => {
+  const userId = req.user!.userId;
   const matched = db
     .select({ id: receiptTransactionMatches.bankTransactionId })
     .from(receiptTransactionMatches);
@@ -83,8 +92,9 @@ router.get("/unmatched", async (_req, res) => {
       createdAt: bankTransactions.createdAt,
     })
     .from(bankTransactions)
-    .leftJoin(accounts, eq(bankTransactions.accountId, accounts.id))
-    .where(sql`${bankTransactions.id} NOT IN (${matched})`)
+    .innerJoin(accounts, eq(bankTransactions.accountId, accounts.id))
+    .innerJoin(institutions, eq(accounts.institutionId, institutions.id))
+    .where(and(eq(institutions.userId, userId), sql`${bankTransactions.id} NOT IN (${matched})`))
     .orderBy(bankTransactions.date);
 
   res.json(rows.map((r) => serializeTxn(r)));
@@ -238,14 +248,22 @@ router.post("/sync", async (req, res) => {
   res.json({ added: totalAdded, removed: totalRemoved, updated: totalModified, accounts: allAccounts.length, errors });
 });
 
-// GET /transactions/vendors — list distinct merchant names
-router.get("/vendors", async (_req, res) => {
+// GET /transactions/vendors — list the CALLING USER's distinct merchant
+// names. SECURITY FIX (2026-08-27): no user filter at all -- leaked
+// every user's vendor/merchant names to any authenticated caller.
+router.get("/vendors", async (req, res) => {
+  const userId = req.user!.userId;
   const rows = await db
     .select({
       vendor: bankTransactions.merchantName,
     })
     .from(bankTransactions)
-    .where(sql`${bankTransactions.merchantName} IS NOT NULL AND ${bankTransactions.merchantName} != ''`)
+    .innerJoin(accounts, eq(bankTransactions.accountId, accounts.id))
+    .innerJoin(institutions, eq(accounts.institutionId, institutions.id))
+    .where(and(
+      eq(institutions.userId, userId),
+      sql`${bankTransactions.merchantName} IS NOT NULL AND ${bankTransactions.merchantName} != ''`
+    ))
     .groupBy(bankTransactions.merchantName)
     .orderBy(bankTransactions.merchantName);
 
@@ -255,8 +273,13 @@ router.get("/vendors", async (_req, res) => {
       vendor: bankTransactions.merchantNameRaw,
     })
     .from(bankTransactions)
+    .innerJoin(accounts, eq(bankTransactions.accountId, accounts.id))
+    .innerJoin(institutions, eq(accounts.institutionId, institutions.id))
     .where(
-      sql`${bankTransactions.merchantName} IS NULL AND ${bankTransactions.merchantNameRaw} IS NOT NULL AND ${bankTransactions.merchantNameRaw} != ''`
+      and(
+        eq(institutions.userId, userId),
+        sql`${bankTransactions.merchantName} IS NULL AND ${bankTransactions.merchantNameRaw} IS NOT NULL AND ${bankTransactions.merchantNameRaw} != ''`
+      )
     )
     .groupBy(bankTransactions.merchantNameRaw)
     .orderBy(bankTransactions.merchantNameRaw);
@@ -270,9 +293,19 @@ router.get("/vendors", async (_req, res) => {
   res.json([...new Set(vendors)]);
 });
 
-// POST /transactions/bulk-categorize — assign category to all transactions from a merchant
+// POST /transactions/bulk-categorize — assign category to all of the
+// CALLING USER's OWN transactions from a merchant.
+// SECURITY FIX (2026-08-27): this previously updated EVERY user's
+// transactions matching merchantName, with no ownership check at all --
+// any authenticated user recategorizing e.g. "Starbucks" would silently
+// rewrite every other user's Starbucks transactions too. Drizzle's
+// update().where() can't join, so ownership is enforced by first
+// SELECTing the caller's own matching transaction ids (via the same
+// institutions.userId join used everywhere else), then updating only
+// those ids.
 router.post("/bulk-categorize", async (req, res) => {
   const { merchantName, userCategory } = req.body;
+  const userId = req.user!.userId;
 
   if (!merchantName || !userCategory) {
     return void res.status(400).json({ error: "merchantName and userCategory are required" });
@@ -284,35 +317,50 @@ router.post("/bulk-categorize", async (req, res) => {
     return void res.status(400).json({ error: "Invalid category" });
   }
 
-  // Update all matching transactions (by merchantName OR merchantNameRaw)
-  const result1 = await db
+  const ownedIds = await db
+    .select({ id: bankTransactions.id })
+    .from(bankTransactions)
+    .innerJoin(accounts, eq(bankTransactions.accountId, accounts.id))
+    .innerJoin(institutions, eq(accounts.institutionId, institutions.id))
+    .where(and(
+      eq(institutions.userId, userId),
+      sql`(${bankTransactions.merchantName} = ${merchantName} OR (${bankTransactions.merchantName} IS NULL AND ${bankTransactions.merchantNameRaw} = ${merchantName}))`
+    ));
+
+  if (ownedIds.length === 0) {
+    return void res.json({ updated: 0, merchantName, userCategory });
+  }
+
+  const ids = ownedIds.map((r) => r.id);
+  const updated = await db
     .update(bankTransactions)
     .set({ userCategory })
-    .where(eq(bankTransactions.merchantName, merchantName))
+    .where(inArray(bankTransactions.id, ids))
     .returning({ id: bankTransactions.id });
 
-  const result2 = await db
-    .update(bankTransactions)
-    .set({ userCategory })
-    .where(
-      and(
-        isNull(bankTransactions.merchantName),
-        eq(bankTransactions.merchantNameRaw, merchantName)
-      )
-    )
-    .returning({ id: bankTransactions.id });
-
-  const updated = result1.length + result2.length;
-  res.json({ updated, merchantName, userCategory });
+  res.json({ updated: updated.length, merchantName, userCategory });
 });
 
-// POST /transactions/categorize — batch AI categorization for uncategorized transactions
-router.post("/categorize", async (_req, res) => {
-  // Get all transactions without a user_category
+// POST /transactions/categorize — batch AI categorization for the CALLING
+// USER's own uncategorized transactions.
+// SECURITY FIX (2026-08-27): no user filter -- this selected and
+// AI-categorized every user's uncategorized transactions, silently
+// writing results into other users' data.
+router.post("/categorize", async (req, res) => {
+  const userId = req.user!.userId;
   const uncategorized = await db
-    .select()
+    .select({
+      id: bankTransactions.id,
+      merchantName: bankTransactions.merchantName,
+      merchantNameRaw: bankTransactions.merchantNameRaw,
+      amount: bankTransactions.amount,
+      categoryPrimary: bankTransactions.categoryPrimary,
+      categoryDetail: bankTransactions.categoryDetail,
+    })
     .from(bankTransactions)
-    .where(isNull(bankTransactions.userCategory));
+    .innerJoin(accounts, eq(bankTransactions.accountId, accounts.id))
+    .innerJoin(institutions, eq(accounts.institutionId, institutions.id))
+    .where(and(eq(institutions.userId, userId), isNull(bankTransactions.userCategory)));
 
   if (uncategorized.length === 0) {
     return void res.json({ categorized: 0, total: 0, breakdown: {} });

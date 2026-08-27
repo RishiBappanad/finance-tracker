@@ -1,14 +1,25 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
 import { accounts, institutions } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { CreateAccountBody } from "@workspace/api-zod";
 import { getPlaidAdapter } from "../services/plaid.js";
 
 const router = Router();
 
-// POST /accounts/create-link-token — generates a Plaid Link token for the frontend
-router.post("/create-link-token", async (_req, res) => {
+// POST /accounts/create-link-token — generates a Plaid Link token for the frontend.
+// SECURITY FIX (2026-08-27): client_user_id was hardcoded to the literal
+// string "local-user-1" for EVERY user of this app. Plaid uses
+// client_user_id specifically to recognize a returning user in Link --
+// with every user sharing one ID, Plaid treated every new signup as the
+// SAME person who'd connected before, and could skip phone-number entry
+// entirely, sending an OTP straight to whatever phone number was
+// already on file for that ID (the first person who ever linked a
+// bank). This is what caused a second user's Plaid Link flow to
+// silently text the first user's phone instead of prompting for their
+// own number. Fixed by using this app's own per-user id, which is what
+// every other Plaid-adjacent write in this file already scopes by.
+router.post("/create-link-token", async (req, res) => {
   const { PLAID_CLIENT_ID, PLAID_SECRET, PLAID_ENV = "sandbox" } = process.env;
   if (!PLAID_CLIENT_ID || !PLAID_SECRET) {
     return void res.status(500).json({ error: "Plaid credentials not configured" });
@@ -20,7 +31,7 @@ router.post("/create-link-token", async (_req, res) => {
     body: JSON.stringify({
       client_id: PLAID_CLIENT_ID,
       secret: PLAID_SECRET,
-      user: { client_user_id: "local-user-1" },
+      user: { client_user_id: String(req.user!.userId) },
       client_name: "Receipt Wallet",
       products: ["transactions"],
       country_codes: ["US"],
@@ -124,6 +135,10 @@ router.post("/", async (req, res) => {
   res.status(201).json({ ...row[0], createdAt: row[0]?.createdAt?.toISOString() ?? "" });
 });
 
+// SECURITY FIX (2026-08-27): no ownership check at all -- any authenticated
+// user could view any other user's linked account by guessing/enumerating
+// accountId. leftJoin -> innerJoin since an orphaned account (no
+// institution row) can never belong to the caller anyway.
 router.get("/:accountId", async (req, res) => {
   const rows = await db
     .select({
@@ -138,15 +153,27 @@ router.get("/:accountId", async (req, res) => {
       createdAt: accounts.createdAt,
     })
     .from(accounts)
-    .leftJoin(institutions, eq(accounts.institutionId, institutions.id))
-    .where(eq(accounts.id, req.params.accountId))
+    .innerJoin(institutions, eq(accounts.institutionId, institutions.id))
+    .where(and(eq(accounts.id, req.params.accountId), eq(institutions.userId, req.user!.userId)))
     .limit(1);
 
   if (!rows.length) return void res.status(404).json({ error: "Account not found" });
   res.json({ ...rows[0], createdAt: rows[0].createdAt?.toISOString() ?? "" });
 });
 
+// SECURITY FIX (2026-08-27): no ownership check -- any authenticated user
+// could delete any other user's linked bank account. Verify ownership
+// first (same join as GET /:accountId above) before deleting.
 router.delete("/:accountId", async (req, res) => {
+  const owned = await db
+    .select({ id: accounts.id })
+    .from(accounts)
+    .innerJoin(institutions, eq(accounts.institutionId, institutions.id))
+    .where(and(eq(accounts.id, req.params.accountId), eq(institutions.userId, req.user!.userId)))
+    .limit(1);
+
+  if (!owned.length) return void res.status(404).json({ error: "Account not found" });
+
   await db.delete(accounts).where(eq(accounts.id, req.params.accountId));
   res.status(204).send();
 });

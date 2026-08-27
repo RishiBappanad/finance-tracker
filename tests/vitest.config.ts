@@ -6,6 +6,10 @@ export default defineConfig({
     environment: "node",
     globals: false,
     include: ["tests/**/*.test.ts"],
+    // user-scoping-live.test.ts deliberately does NOT mock @workspace/db --
+    // it needs a real, disposable database and its own JWT/Plaid env (see
+    // vitest.live.config.ts), not this config's mock DATABASE_URL.
+    exclude: ["**/node_modules/**", "tests/integration/user-scoping-live.test.ts"],
     testTimeout: 15_000,
     env: {
       NODE_ENV: "test",

@@ -166,16 +166,21 @@ describe("POST /api/accounts", () => {
 describe("DELETE /api/accounts/:accountId", () => {
   it("returns 204 on successful deletion", async () => {
     enqueue([]); // requireAuth's ensureLocalUser insert
-    enqueue([]);
+    enqueue([{ id: "acc-1" }]); // ownership check (innerJoin institutions, filtered by userId)
+    enqueue([]); // delete
     const res = await request(app).delete("/api/accounts/acc-1").set(authHeader(userA));
     expect(res.status).toBe(204);
     expect(res.text).toBe("");
   });
 
-  it("returns 204 even for non-existent account (idempotent delete)", async () => {
-    enqueue([]);
-    enqueue([]);
+  // SECURITY FIX (2026-08-27): this used to be an unconditional, un-owned
+  // delete that always returned 204 whether or not the account existed or
+  // belonged to the caller. It now verifies ownership first, so a
+  // non-existent (or another user's) account correctly 404s instead.
+  it("returns 404 for a non-existent account", async () => {
+    enqueue([]); // requireAuth's ensureLocalUser insert
+    enqueue([]); // ownership check finds nothing
     const res = await request(app).delete("/api/accounts/ghost").set(authHeader(userA));
-    expect(res.status).toBe(204);
+    expect(res.status).toBe(404);
   });
 });

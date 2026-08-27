@@ -173,7 +173,9 @@ describe("POST /api/matches", () => {
   const VALID_BODY = { receiptId: 10, bankTransactionId: "txn-1" };
 
   it("returns 201 with the created match", async () => {
-    enqueue([]);
+    enqueue([]); // requireAuth's ensureLocalUser insert
+    enqueue([{ id: 10 }]); // receipt ownership check
+    enqueue([{ id: "txn-1" }]); // transaction ownership check
     enqueue([MATCH]);
     const res = await request(app).post("/api/matches").set(authHeader(userA)).send(VALID_BODY);
     expect(res.status).toBe(201);
@@ -212,7 +214,8 @@ describe("POST /api/matches", () => {
 describe("PATCH /api/matches/:matchId", () => {
   it("returns 200 with updated match when confirming", async () => {
     const confirmed = { ...MATCH, confirmed: true, confirmedAt: new Date() };
-    enqueue([]);
+    enqueue([]); // requireAuth's ensureLocalUser insert
+    enqueue([{ id: 1 }]); // matchBelongsToUser ownership check
     enqueue([confirmed]);
     const res = await request(app).patch("/api/matches/1").set(authHeader(userA)).send({ confirmed: true });
     expect(res.status).toBe(200);
@@ -220,22 +223,24 @@ describe("PATCH /api/matches/:matchId", () => {
   });
 
   it("returns 200 when un-confirming a match", async () => {
-    enqueue([]);
+    enqueue([]); // requireAuth's ensureLocalUser insert
+    enqueue([{ id: 1 }]); // matchBelongsToUser ownership check
     enqueue([MATCH]);
     const res = await request(app).patch("/api/matches/1").set(authHeader(userA)).send({ confirmed: false });
     expect(res.status).toBe(200);
   });
 
   it("returns 404 when match not found", async () => {
-    enqueue([]);
-    enqueue([]);
+    enqueue([]); // requireAuth's ensureLocalUser insert
+    enqueue([]); // matchBelongsToUser ownership check finds nothing
     const res = await request(app).patch("/api/matches/9999").set(authHeader(userA)).send({ confirmed: true });
     expect(res.status).toBe(404);
     expect(res.body).toHaveProperty("error");
   });
 
   it("returns 400 when body is invalid", async () => {
-    enqueue([]);
+    enqueue([]); // requireAuth's ensureLocalUser insert
+    enqueue([{ id: 1 }]); // matchBelongsToUser ownership check (runs before body validation)
     const res = await request(app)
       .patch("/api/matches/1")
       .set(authHeader(userA))
@@ -248,16 +253,20 @@ describe("PATCH /api/matches/:matchId", () => {
 
 describe("DELETE /api/matches/:matchId", () => {
   it("returns 204 on successful deletion", async () => {
-    enqueue([]);
-    enqueue([]);
+    enqueue([]); // requireAuth's ensureLocalUser insert
+    enqueue([{ id: 1 }]); // matchBelongsToUser ownership check
+    enqueue([]); // delete
     const res = await request(app).delete("/api/matches/1").set(authHeader(userA));
     expect(res.status).toBe(204);
   });
 
-  it("returns 204 for non-existent match (idempotent)", async () => {
-    enqueue([]);
-    enqueue([]);
+  // SECURITY FIX (2026-08-27): delete-by-id-only used to be unconditionally
+  // idempotent (always 204). It now verifies ownership first, so a
+  // non-existent (or another user's) match correctly 404s instead.
+  it("returns 404 for a non-existent match", async () => {
+    enqueue([]); // requireAuth's ensureLocalUser insert
+    enqueue([]); // matchBelongsToUser ownership check finds nothing
     const res = await request(app).delete("/api/matches/9999").set(authHeader(userA));
-    expect(res.status).toBe(204);
+    expect(res.status).toBe(404);
   });
 });

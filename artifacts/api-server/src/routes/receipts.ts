@@ -55,6 +55,19 @@ function serializeReceipt(r: any, matchId?: number | null) {
   };
 }
 
+// Shared ownership check for the /:receiptId/items* routes below -- a
+// receipt item has no userId column of its own, it's only reachable
+// through its parent receipt, so every item route must verify the
+// PARENT receipt belongs to the caller before touching its items.
+async function receiptBelongsToUser(receiptId: number, userId: number): Promise<boolean> {
+  const rows = await db
+    .select({ id: scannedReceipts.id })
+    .from(scannedReceipts)
+    .where(and(eq(scannedReceipts.id, receiptId), eq(scannedReceipts.userId, userId)))
+    .limit(1);
+  return rows.length > 0;
+}
+
 async function getMatchMap(receiptIds: number[]) {
   if (!receiptIds.length) return new Map<number, number>();
   const matchRows = await db
@@ -64,6 +77,8 @@ async function getMatchMap(receiptIds: number[]) {
   return new Map(matchRows.map((m) => [m.receiptId, m.id]));
 }
 
+// SECURITY FIX (2026-08-27): no user filter at all -- returned every
+// user's expiring-return receipts to any authenticated caller.
 router.get("/expiring", async (req, res) => {
   const parsed = ListExpiringReceiptsQueryParams.safeParse(req.query);
   const days = parsed.success && parsed.data.days != null ? parsed.data.days : 14;
@@ -77,6 +92,7 @@ router.get("/expiring", async (req, res) => {
     .from(scannedReceipts)
     .where(
       and(
+        eq(scannedReceipts.userId, req.user!.userId),
         sql`${scannedReceipts.returnDeadline} IS NOT NULL`,
         gte(scannedReceipts.returnDeadline, todayStr),
         lte(scannedReceipts.returnDeadline, cutoffStr)
@@ -88,7 +104,11 @@ router.get("/expiring", async (req, res) => {
   res.json(rows.map((r) => serializeReceipt(r, mm.get(r.id))));
 });
 
-router.get("/unmatched", async (_req, res) => {
+// SECURITY FIX (2026-08-27): no user filter -- returned every user's
+// unmatched receipts to any caller. The frontend's Reconcile page calls
+// this directly (useListUnmatchedReceipts) -- confirmed exploited.
+router.get("/unmatched", async (req, res) => {
+  const userId = req.user!.userId;
   const matched = db
     .select({ id: receiptTransactionMatches.receiptId })
     .from(receiptTransactionMatches);
@@ -96,17 +116,20 @@ router.get("/unmatched", async (_req, res) => {
   const rows = await db
     .select()
     .from(scannedReceipts)
-    .where(sql`${scannedReceipts.id} NOT IN (${matched})`)
+    .where(and(eq(scannedReceipts.userId, userId), sql`${scannedReceipts.id} NOT IN (${matched})`))
     .orderBy(scannedReceipts.createdAt);
 
   res.json(rows.map((r) => serializeReceipt(r)));
 });
 
+// SECURITY FIX (2026-08-27): no user filter at all -- this is the
+// frontend's primary Receipts page list; returned every user's receipts
+// to every other authenticated user. Confirmed exploited.
 router.get("/", async (req, res) => {
   const parsed = ListReceiptsQueryParams.safeParse(req.query);
   const params = parsed.success ? parsed.data : {};
 
-  const conditions = [];
+  const conditions = [eq(scannedReceipts.userId, req.user!.userId)];
   if (params.status) conditions.push(eq(scannedReceipts.processingStatus, params.status));
   if (params.search) conditions.push(like(scannedReceipts.storeName, `%${params.search}%`));
   if (params.from) conditions.push(gte(scannedReceipts.purchaseDate, params.from));
@@ -115,7 +138,7 @@ router.get("/", async (req, res) => {
   const rows = await db
     .select()
     .from(scannedReceipts)
-    .where(conditions.length ? and(...conditions) : undefined)
+    .where(and(...conditions))
     .orderBy(scannedReceipts.createdAt);
 
   const mm = await getMatchMap(rows.map((r) => r.id));
@@ -310,9 +333,13 @@ router.post("/", async (req, res) => {
   res.status(201).json(serializeReceipt(row));
 });
 
+// SECURITY FIX (2026-08-27): no ownership check -- any authenticated user
+// could view any other user's receipt (+ items + matched transaction) by
+// guessing/enumerating receiptId.
 router.get("/:receiptId", async (req, res) => {
   const id = Number(req.params.receiptId);
-  const [row] = await db.select().from(scannedReceipts).where(eq(scannedReceipts.id, id)).limit(1);
+  const [row] = await db.select().from(scannedReceipts)
+    .where(and(eq(scannedReceipts.id, id), eq(scannedReceipts.userId, req.user!.userId))).limit(1);
   if (!row) return void res.status(404).json({ error: "Receipt not found" });
 
   const items = await db.select().from(receiptItems).where(eq(receiptItems.receiptId, id)).orderBy(receiptItems.sortOrder);
@@ -354,9 +381,13 @@ router.get("/:receiptId", async (req, res) => {
 // receipt detail page show candidate transactions for the user to pick from
 // when the automatic match at confirm-time didn't reach auto_matched
 // confidence.
+// SECURITY FIX (2026-08-27): no ownership check -- any user could pull
+// match suggestions (and thereby the receipt's own total/date/store) for
+// any other user's receipt by guessing receiptId.
 router.get("/:receiptId/suggestions", async (req, res) => {
   const id = Number(req.params.receiptId);
-  const [row] = await db.select().from(scannedReceipts).where(eq(scannedReceipts.id, id)).limit(1);
+  const [row] = await db.select().from(scannedReceipts)
+    .where(and(eq(scannedReceipts.id, id), eq(scannedReceipts.userId, req.user!.userId))).limit(1);
   if (!row) return void res.status(404).json({ error: "Receipt not found" });
 
   const existingMatch = await db
@@ -385,6 +416,10 @@ router.get("/:receiptId/suggestions", async (req, res) => {
   });
 });
 
+// SECURITY FIX (2026-08-27): no ownership check -- any authenticated user
+// could EDIT any other user's receipt by guessing receiptId. The update
+// itself is now scoped by (id AND userId), so a mismatched owner simply
+// updates zero rows -> 404, rather than trusting the id alone.
 router.patch("/:receiptId", async (req, res) => {
   const id = Number(req.params.receiptId);
   const parsed = UpdateReceiptBody.safeParse(req.body);
@@ -409,7 +444,8 @@ router.patch("/:receiptId", async (req, res) => {
   }
   if (d.notes !== undefined) updates.notes = d.notes;
 
-  const [row] = await db.update(scannedReceipts).set(updates).where(eq(scannedReceipts.id, id)).returning();
+  const [row] = await db.update(scannedReceipts).set(updates)
+    .where(and(eq(scannedReceipts.id, id), eq(scannedReceipts.userId, req.user!.userId))).returning();
   if (!row) return void res.status(404).json({ error: "Receipt not found" });
 
   const match = await db
@@ -421,21 +457,40 @@ router.patch("/:receiptId", async (req, res) => {
   res.json(serializeReceipt(row, match[0]?.id ?? null));
 });
 
+// SECURITY FIX (2026-08-27): no ownership check -- any authenticated user
+// could DELETE any other user's receipt by guessing receiptId.
 router.delete("/:receiptId", async (req, res) => {
-  await db.delete(scannedReceipts).where(eq(scannedReceipts.id, Number(req.params.receiptId)));
+  await db.delete(scannedReceipts)
+    .where(and(eq(scannedReceipts.id, Number(req.params.receiptId)), eq(scannedReceipts.userId, req.user!.userId)));
   res.status(204).send();
 });
 
+// SECURITY FIX (2026-08-27): no ownership check -- any authenticated user
+// could list line items for any other user's receipt by guessing
+// receiptId.
 router.get("/:receiptId/items", async (req, res) => {
+  const receiptId = Number(req.params.receiptId);
+  if (!(await receiptBelongsToUser(receiptId, req.user!.userId))) {
+    return void res.status(404).json({ error: "Receipt not found" });
+  }
+
   const items = await db
     .select()
     .from(receiptItems)
-    .where(eq(receiptItems.receiptId, Number(req.params.receiptId)))
+    .where(eq(receiptItems.receiptId, receiptId))
     .orderBy(receiptItems.sortOrder);
   res.json(items);
 });
 
+// SECURITY FIX (2026-08-27): no ownership check -- any authenticated user
+// could add a line item to any other user's receipt by guessing
+// receiptId.
 router.post("/:receiptId/items", async (req, res) => {
+  const receiptId = Number(req.params.receiptId);
+  if (!(await receiptBelongsToUser(receiptId, req.user!.userId))) {
+    return void res.status(404).json({ error: "Receipt not found" });
+  }
+
   const parsed = CreateReceiptItemBody.safeParse(req.body);
   if (!parsed.success) return void res.status(400).json({ error: "Invalid input" });
 
@@ -448,7 +503,7 @@ router.post("/:receiptId/items", async (req, res) => {
 
   const [item] = await db
     .insert(receiptItems)
-    .values({ receiptId: Number(req.params.receiptId), ...parsed.data })
+    .values({ receiptId, ...parsed.data })
     .returning();
 
   res.status(201).json(item);
@@ -458,7 +513,14 @@ router.post("/:receiptId/items", async (req, res) => {
 // receipt has been saved (most commonly: re-assign its category). The
 // confirm-time flow was the only way to set an item's category before this;
 // there was no way to fix a miscategorized item afterward.
+// SECURITY FIX (2026-08-27): no ownership check -- any authenticated user
+// could edit a line item on any other user's receipt by guessing
+// receiptId/itemId.
 router.patch("/:receiptId/items/:itemId", async (req, res) => {
+  if (!(await receiptBelongsToUser(Number(req.params.receiptId), req.user!.userId))) {
+    return void res.status(404).json({ error: "Item not found" });
+  }
+
   const parsed = UpdateReceiptItemBody.safeParse(req.body);
   if (!parsed.success) return void res.status(400).json({ error: "Invalid input" });
 
