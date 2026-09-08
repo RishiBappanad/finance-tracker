@@ -9,6 +9,7 @@ import { TransactionRow, type TransactionData } from "@/components/transaction-r
 import { MultiSelectFilter } from "@/components/multi-select-filter";
 import { useListAccounts } from "@workspace/api-client-react";
 import { API_BASE, authFetch } from "@/lib/api";
+import { getCategoryColor } from "@/lib/category-colors";
 import {
   LineChart,
   Line,
@@ -35,17 +36,6 @@ interface SpendingPoint {
   category: string;
   total: number;
 }
-
-const CATEGORY_COLORS: Record<string, string> = {
-  "Food & Dining": "#ef4444",
-  "Groceries": "#f97316",
-  "Transportation": "#eab308",
-  "Shopping": "#22c55e",
-  "Entertainment": "#14b8a6",
-  "Bills & Utilities": "#3b82f6",
-  "Travel": "#a855f7",
-  "Other": "#9ca3af",
-};
 
 function formatCurrency(amount: number | null | undefined) {
   if (amount == null) return "$0.00";
@@ -296,7 +286,7 @@ export default function Dashboard() {
                     key={cat}
                     type="monotone"
                     dataKey={cat}
-                    stroke={CATEGORY_COLORS[cat] ?? "#64748b"}
+                    stroke={getCategoryColor(cat)}
                     dot={false}
                     strokeWidth={2}
                     connectNulls

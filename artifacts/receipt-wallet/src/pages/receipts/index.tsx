@@ -4,7 +4,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Link } from "wouter";
 import { FileText, Plus, Search, Camera, Loader2, Check, X, Edit2 } from "lucide-react";
-import { useListReceipts } from "@workspace/api-client-react";
+import { useListReceipts, useListReceiptCategories } from "@workspace/api-client-react";
 import { API_BASE, authFetch } from "@/lib/api";
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
@@ -294,11 +294,6 @@ export default function Receipts() {
 
 // ── Receipt Verification Component ───────────────────────────────────────────
 
-const DEFAULT_CATEGORIES = [
-  "Groceries", "Dining", "Gas", "Shopping", "Health", "Entertainment",
-  "Home", "Electronics", "Clothing", "Personal Care", "Other"
-];
-
 function ReceiptVerification({
   scanResult,
   isManual,
@@ -310,6 +305,7 @@ function ReceiptVerification({
   onConfirm: (data: any) => void;
   onCancel: () => void;
 }) {
+  const { data: categories } = useListReceiptCategories();
   const ext = scanResult.extraction;
   const [storeName, setStoreName] = useState(ext.storeName || "");
   const [purchaseDate, setPurchaseDate] = useState(ext.purchaseDate || "");
@@ -468,7 +464,7 @@ function ReceiptVerification({
                     className="w-full h-8 px-2 rounded-md border bg-background text-xs text-foreground"
                   >
                     <option value="">Category...</option>
-                    {DEFAULT_CATEGORIES.map((cat) => (
+                    {(categories ?? []).map((cat) => (
                       <option key={cat} value={cat}>{cat}</option>
                     ))}
                   </select>

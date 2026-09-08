@@ -14,6 +14,7 @@ import {
 import { MultiSelectFilter } from "@/components/multi-select-filter";
 import { TransactionRow, type TransactionData } from "@/components/transaction-row";
 import { API_BASE, authFetch } from "@/lib/api";
+import { getCategoryColor } from "@/lib/category-colors";
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 
@@ -22,29 +23,6 @@ interface CategoryData {
   total: number;
   count: number;
 }
-
-const CATEGORY_COLORS: Record<string, string> = {
-  "Food & Dining": "#ef4444",
-  "Groceries": "#f97316",
-  "Transportation": "#eab308",
-  "Gas & Fuel": "#84cc16",
-  "Shopping": "#22c55e",
-  "Entertainment": "#14b8a6",
-  "Health & Fitness": "#06b6d4",
-  "Bills & Utilities": "#3b82f6",
-  "Rent & Mortgage": "#6366f1",
-  "Insurance": "#8b5cf6",
-  "Travel": "#a855f7",
-  "Education": "#d946ef",
-  "Personal Care": "#ec4899",
-  "Gifts & Donations": "#f43f5e",
-  "Income": "#10b981",
-  "Transfer": "#64748b",
-  "Fees & Charges": "#dc2626",
-  "Investment": "#059669",
-  "Other": "#9ca3af",
-  "Uncategorized": "#d4d4d8",
-};
 
 type ViewMode = "spending" | "earnings";
 type DrilldownSort = "date-desc" | "date-asc" | "amount-desc" | "amount-asc" | "merchant-asc";
@@ -316,7 +294,7 @@ export default function CashFlow() {
                     {chartData.map((entry) => (
                       <Cell
                         key={entry.category}
-                        fill={CATEGORY_COLORS[entry.category] ?? "#9ca3af"}
+                        fill={getCategoryColor(entry.category)}
                         opacity={selectedCategory && selectedCategory !== entry.category ? 0.4 : 1}
                       />
                     ))}
@@ -355,7 +333,7 @@ export default function CashFlow() {
                   >
                     <div
                       className="h-3 w-3 rounded-full shrink-0"
-                      style={{ backgroundColor: CATEGORY_COLORS[item.category] ?? "#9ca3af" }}
+                      style={{ backgroundColor: getCategoryColor(item.category) }}
                     />
                     <div className="flex-1 min-w-0">
                       <div className="flex justify-between items-center">
@@ -368,7 +346,7 @@ export default function CashFlow() {
                             className="h-full rounded-full transition-all"
                             style={{
                               width: `${pct}%`,
-                              backgroundColor: CATEGORY_COLORS[item.category] ?? "#9ca3af",
+                              backgroundColor: getCategoryColor(item.category),
                             }}
                           />
                         </div>
