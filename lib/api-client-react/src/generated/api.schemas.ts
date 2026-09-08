@@ -296,6 +296,100 @@ export interface CategorySpend {
   count: number;
 }
 
+export type EventLogRequestEventType = typeof EventLogRequestEventType[keyof typeof EventLogRequestEventType];
+
+
+export const EventLogRequestEventType = {
+  transaction: 'transaction',
+} as const;
+
+/**
+ * merchantName, merchantNameRaw, currency (all optional). Not a fixed schema -- see EventLogRequest's description.
+ */
+export type EventLogRequestMetadata = { [key: string]: unknown };
+
+/**
+ * Core Event Shape, as a request body. `event_type` must be "transaction" -- the only event type this tracker has. See EVENT_CONTRACT_OPENAPI.yaml for the tracker-agnostic version of this shape.
+ */
+export interface EventLogRequest {
+  event_type: EventLogRequestEventType;
+  /** Maps to bank_transactions.date, YYYY-MM-DD. */
+  occurred_at: string;
+  /** The transaction's dollar amount (signed -- positive spending, negative income). */
+  amount?: number;
+  /**
+     * Defaults to "manual" for events logged through this endpoint.
+     * @nullable
+     */
+  source?: string | null;
+  /** @nullable */
+  source_id?: string | null;
+  /**
+     * Maps to bank_transactions.userCategory. Valid values come from GET /transactions/categories (defaults + user-created) -- not a fixed enum in this schema since that list is dynamic.
+     * @nullable
+     */
+  category?: string | null;
+  /** Maps directly to bank_transactions.ignored. */
+  hidden?: boolean;
+  /**
+     * Not persisted. Finance's real lifecycle field is `pending` (a boolean, surfaced in `metadata.pending` on read) -- deliberately not generalized into a string enum, per EVENT_CONTRACT_SPEC.md's Resolved Decision #3.
+     * @nullable
+     */
+  status?: string | null;
+  /** merchantName, merchantNameRaw, currency (all optional). Not a fixed schema -- see EventLogRequest's description. */
+  metadata?: EventLogRequestMetadata;
+}
+
+export type EventEventType = typeof EventEventType[keyof typeof EventEventType];
+
+
+export const EventEventType = {
+  transaction: 'transaction',
+} as const;
+
+export type EventMetadata = { [key: string]: unknown };
+
+/**
+ * Core Event Shape, as returned by GET /events.
+ */
+export interface Event {
+  id: string;
+  user_id: number;
+  event_type: EventEventType;
+  /** @nullable */
+  category?: string | null;
+  occurred_at: string;
+  created_at: string;
+  amount: number;
+  /** @nullable */
+  source?: string | null;
+  /** @nullable */
+  source_id?: string | null;
+  hidden?: boolean;
+  /** @nullable */
+  status?: string | null;
+  metadata?: EventMetadata;
+}
+
+export interface LogEventResult {
+  status: string;
+  id: string;
+}
+
+export interface EventsQueryResult {
+  events: Event[];
+  total: number;
+}
+
+/**
+ * A dynamic group-dimension key ("category", "source", or "event_type", whichever aggType was requested) plus fixed total_amount (number) and unit (string, always "usd") fields.
+ */
+export type AggregationsResponseDataItem = {[key: string]: string | number};
+
+export interface AggregationsResponse {
+  data: AggregationsResponseDataItem[];
+}
+
 export type ListTransactionsParams = {
 /**
  * @nullable
@@ -370,5 +464,37 @@ from?: string | null;
  * @nullable
  */
 to?: string | null;
+};
+
+export type GetEventsParams = {
+/**
+ * Inclusive start date, YYYY-MM-DD
+ */
+start: string;
+/**
+ * Inclusive end date, YYYY-MM-DD
+ */
+end: string;
+/**
+ * Only "transaction" is valid for this tracker; omit for all (same result).
+ * @nullable
+ */
+event_type?: string | null;
+/**
+ * Filter to one source (e.g. "plaid" or "manual"); omit for all.
+ * @nullable
+ */
+source?: string | null;
+};
+
+export type GetEventAggregationsParams = {
+/**
+ * Inclusive start date, YYYY-MM-DD
+ */
+start: string;
+/**
+ * Inclusive end date, YYYY-MM-DD
+ */
+end: string;
 };
 

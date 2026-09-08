@@ -22,15 +22,21 @@ import type {
 import type {
   Account,
   AccountInput,
+  AggregationsResponse,
   CategorySpend,
   DashboardSummary,
   ErrorResponse,
+  EventLogRequest,
+  EventsQueryResult,
+  GetEventAggregationsParams,
+  GetEventsParams,
   GetSpendingByCategoryParams,
   HealthStatus,
   ListExpiringReceiptsParams,
   ListMatchesParams,
   ListReceiptsParams,
   ListTransactionsParams,
+  LogEventResult,
   Match,
   MatchInput,
   MatchUpdate,
@@ -2175,6 +2181,251 @@ export function useGetSpendingByCategory<TData = Awaited<ReturnType<typeof getSp
  ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
 
   const queryOptions = getGetSpendingByCategoryQueryOptions(params,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getLogEventUrl = () => {
+
+
+
+
+  return `/api/events/log`
+}
+
+/**
+ * Only event_type "transaction" is supported. Writes a normal bank_transactions row against a lazily-created synthetic "Manual Entries" account, so a manually-logged event shows up in the regular transaction list/aggregations like any other transaction.
+ * @summary Log one event (Universal Event Contract)
+ */
+export const logEvent = async (eventLogRequest: EventLogRequest, options?: RequestInit): Promise<LogEventResult> => {
+
+  return customFetch<LogEventResult>(getLogEventUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(eventLogRequest)
+  }
+);}
+
+
+
+
+export const getLogEventMutationOptions = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof logEvent>>, TError,{data: BodyType<EventLogRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof logEvent>>, TError,{data: BodyType<EventLogRequest>}, TContext> => {
+
+const mutationKey = ['logEvent'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof logEvent>>, {data: BodyType<EventLogRequest>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  logEvent(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type LogEventMutationResult = NonNullable<Awaited<ReturnType<typeof logEvent>>>
+    export type LogEventMutationBody = BodyType<EventLogRequest>
+    export type LogEventMutationError = ErrorType<ErrorResponse>
+
+    /**
+ * @summary Log one event (Universal Event Contract)
+ */
+export const useLogEvent = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof logEvent>>, TError,{data: BodyType<EventLogRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof logEvent>>,
+        TError,
+        {data: BodyType<EventLogRequest>},
+        TContext
+      > => {
+      return useMutation(getLogEventMutationOptions(options));
+    }
+
+export const getGetEventsUrl = (params: GetEventsParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/events?${stringifiedParams}` : `/api/events`
+}
+
+/**
+ * @summary Query events (Universal Event Contract)
+ */
+export const getEvents = async (params: GetEventsParams, options?: RequestInit): Promise<EventsQueryResult> => {
+
+  return customFetch<EventsQueryResult>(getGetEventsUrl(params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetEventsQueryKey = (params?: GetEventsParams,) => {
+    return [
+    `/api/events`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getGetEventsQueryOptions = <TData = Awaited<ReturnType<typeof getEvents>>, TError = ErrorType<unknown>>(params: GetEventsParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getEvents>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetEventsQueryKey(params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getEvents>>> = ({ signal }) => getEvents(params, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getEvents>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetEventsQueryResult = NonNullable<Awaited<ReturnType<typeof getEvents>>>
+export type GetEventsQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary Query events (Universal Event Contract)
+ */
+
+export function useGetEvents<TData = Awaited<ReturnType<typeof getEvents>>, TError = ErrorType<unknown>>(
+ params: GetEventsParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getEvents>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetEventsQueryOptions(params,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getGetEventAggregationsUrl = (aggType: 'by_category' | 'by_source' | 'by_event_type',
+    params: GetEventAggregationsParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/aggregations/${aggType}?${stringifiedParams}` : `/api/aggregations/${aggType}`
+}
+
+/**
+ * Deliberately simple, uniform semantics matching every other tracker's adapter -- a flat sum of `amount` per group, not finance's richer per-receipt-item category-splitting (see GET /dashboard/spending-by-category for that). `unit` is always "usd": every bank_transactions row already defaults to USD, and true multi-currency aggregation is a real gap this endpoint doesn't attempt to solve.
+ * @summary Sum event amounts grouped by one dimension (Universal Event Contract)
+ */
+export const getEventAggregations = async (aggType: 'by_category' | 'by_source' | 'by_event_type',
+    params: GetEventAggregationsParams, options?: RequestInit): Promise<AggregationsResponse> => {
+
+  return customFetch<AggregationsResponse>(getGetEventAggregationsUrl(aggType,params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetEventAggregationsQueryKey = (aggType: 'by_category' | 'by_source' | 'by_event_type',
+    params?: GetEventAggregationsParams,) => {
+    return [
+    `/api/aggregations/${aggType}`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getGetEventAggregationsQueryOptions = <TData = Awaited<ReturnType<typeof getEventAggregations>>, TError = ErrorType<unknown>>(aggType: 'by_category' | 'by_source' | 'by_event_type',
+    params: GetEventAggregationsParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getEventAggregations>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetEventAggregationsQueryKey(aggType,params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getEventAggregations>>> = ({ signal }) => getEventAggregations(aggType,params, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: aggType !== null && aggType !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getEventAggregations>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetEventAggregationsQueryResult = NonNullable<Awaited<ReturnType<typeof getEventAggregations>>>
+export type GetEventAggregationsQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary Sum event amounts grouped by one dimension (Universal Event Contract)
+ */
+
+export function useGetEventAggregations<TData = Awaited<ReturnType<typeof getEventAggregations>>, TError = ErrorType<unknown>>(
+ aggType: 'by_category' | 'by_source' | 'by_event_type',
+    params: GetEventAggregationsParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getEventAggregations>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetEventAggregationsQueryOptions(aggType,params,options)
 
   const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
 

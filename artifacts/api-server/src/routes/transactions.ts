@@ -196,6 +196,17 @@ router.post("/sync", async (req, res) => {
               categoryDetail: t.category[1] ?? null,
               date: t.date,
               pending: t.pending,
+              // Explicit even though `source` defaults to "plaid" at the
+              // column level -- this is the actual write site that
+              // determines it, matching how every other write site sets
+              // its own source rather than relying on the column default
+              // implicitly (see EVENT_CONTRACT_SPEC.md's Resolved
+              // Decision #2). sourceId = Plaid's own transactionId,
+              // which also happens to be this row's `id` today -- kept
+              // as a separate field anyway so dedup logic isn't relying
+              // on `id`'s meaning never changing.
+              source: "plaid",
+              sourceId: t.transactionId,
             })
             .onConflictDoNothing();
           totalAdded++;

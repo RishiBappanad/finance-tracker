@@ -634,3 +634,79 @@ export const GetSpendingByCategoryResponseItem = zod.object({
 export const GetSpendingByCategoryResponse = zod.array(GetSpendingByCategoryResponseItem)
 
 
+/**
+ * Only event_type "transaction" is supported. Writes a normal bank_transactions row against a lazily-created synthetic "Manual Entries" account, so a manually-logged event shows up in the regular transaction list/aggregations like any other transaction.
+ * @summary Log one event (Universal Event Contract)
+ */
+export const logEventBodyAmountDefault = 0;
+export const logEventBodyHiddenDefault = false;
+export const logEventBodyMetadataDefault = {};
+
+export const LogEventBody = zod.object({
+  "event_type": zod.enum(['transaction']),
+  "occurred_at": zod.string().describe('Maps to bank_transactions.date, YYYY-MM-DD.'),
+  "amount": zod.number().default(logEventBodyAmountDefault).describe('The transaction\'s dollar amount (signed -- positive spending, negative income).'),
+  "source": zod.string().nullish().describe('Defaults to \"manual\" for events logged through this endpoint.'),
+  "source_id": zod.string().nullish(),
+  "category": zod.string().nullish().describe('Maps to bank_transactions.userCategory. Valid values come from GET \/transactions\/categories (defaults + user-created) -- not a fixed enum in this schema since that list is dynamic.'),
+  "hidden": zod.boolean().default(logEventBodyHiddenDefault).describe('Maps directly to bank_transactions.ignored.'),
+  "status": zod.string().nullish().describe('Not persisted. Finance\'s real lifecycle field is `pending` (a boolean, surfaced in `metadata.pending` on read) -- deliberately not generalized into a string enum, per EVENT_CONTRACT_SPEC.md\'s Resolved Decision #3.'),
+  "metadata": zod.record(zod.string(), zod.unknown()).default(logEventBodyMetadataDefault).describe('merchantName, merchantNameRaw, currency (all optional). Not a fixed schema -- see EventLogRequest\'s description.')
+}).describe('Core Event Shape, as a request body. `event_type` must be \"transaction\" -- the only event type this tracker has. See EVENT_CONTRACT_OPENAPI.yaml for the tracker-agnostic version of this shape.')
+
+export const LogEventResponse = zod.object({
+  "status": zod.string(),
+  "id": zod.string()
+})
+
+
+/**
+ * @summary Query events (Universal Event Contract)
+ */
+export const GetEventsQueryParams = zod.object({
+  "start": zod.coerce.string().describe('Inclusive start date, YYYY-MM-DD'),
+  "end": zod.coerce.string().describe('Inclusive end date, YYYY-MM-DD'),
+  "event_type": zod.coerce.string().nullish().describe('Only \"transaction\" is valid for this tracker; omit for all (same result).'),
+  "source": zod.coerce.string().nullish().describe('Filter to one source (e.g. \"plaid\" or \"manual\"); omit for all.')
+})
+
+export const getEventsResponseEventsItemHiddenDefault = false;
+export const getEventsResponseEventsItemMetadataDefault = {};
+
+export const GetEventsResponse = zod.object({
+  "events": zod.array(zod.object({
+  "id": zod.string(),
+  "user_id": zod.number(),
+  "event_type": zod.enum(['transaction']),
+  "category": zod.string().nullish(),
+  "occurred_at": zod.string(),
+  "created_at": zod.string(),
+  "amount": zod.number(),
+  "source": zod.string().nullish(),
+  "source_id": zod.string().nullish(),
+  "hidden": zod.boolean().default(getEventsResponseEventsItemHiddenDefault),
+  "status": zod.string().nullish(),
+  "metadata": zod.record(zod.string(), zod.unknown()).default(getEventsResponseEventsItemMetadataDefault)
+}).describe('Core Event Shape, as returned by GET \/events.')),
+  "total": zod.number()
+})
+
+
+/**
+ * Deliberately simple, uniform semantics matching every other tracker's adapter -- a flat sum of `amount` per group, not finance's richer per-receipt-item category-splitting (see GET /dashboard/spending-by-category for that). `unit` is always "usd": every bank_transactions row already defaults to USD, and true multi-currency aggregation is a real gap this endpoint doesn't attempt to solve.
+ * @summary Sum event amounts grouped by one dimension (Universal Event Contract)
+ */
+export const GetEventAggregationsParams = zod.object({
+  "aggType": zod.enum(['by_category', 'by_source', 'by_event_type'])
+})
+
+export const GetEventAggregationsQueryParams = zod.object({
+  "start": zod.coerce.string().describe('Inclusive start date, YYYY-MM-DD'),
+  "end": zod.coerce.string().describe('Inclusive end date, YYYY-MM-DD')
+})
+
+export const GetEventAggregationsResponse = zod.object({
+  "data": zod.array(zod.record(zod.string(), zod.union([zod.string(),zod.number()])).describe('A dynamic group-dimension key (\"category\", \"source\", or \"event_type\", whichever aggType was requested) plus fixed total_amount (number) and unit (string, always \"usd\") fields.'))
+})
+
+

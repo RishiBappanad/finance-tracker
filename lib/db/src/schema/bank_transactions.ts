@@ -18,6 +18,18 @@ export const bankTransactions = pgTable("bank_transactions", {
   pending: boolean("pending").notNull().default(false),
   plaidSyncedAt: timestamp("plaid_synced_at").notNull().defaultNow(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
+  // Event Contract fields (see workspace-notes/EVENT_CONTRACT_SPEC.md's
+  // Resolved Decision #2). `source` defaults to "plaid" at the column
+  // level so adding it backfills every existing row automatically (all
+  // current rows came from Plaid sync, the only write path before the
+  // Event Contract adapter existed) -- no separate backfill script needed
+  // for this one. `sourceId` has no matching default (it needs each
+  // row's own `id` copied in) -- backfilled once via
+  // `UPDATE bank_transactions SET source_id = id WHERE source_id IS NULL`
+  // after this migration lands, same one-time-then-done shape as every
+  // other additive migration in this project.
+  source: text("source").notNull().default("plaid"),
+  sourceId: text("source_id"),
 });
 
 export type BankTransaction = typeof bankTransactions.$inferSelect;

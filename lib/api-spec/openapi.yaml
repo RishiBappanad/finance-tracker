@@ -19,6 +19,12 @@ tags:
     description: Receipt-transaction reconciliation
   - name: dashboard
     description: Summary and analytics
+  - name: events
+    description: >-
+      TrackStack Universal Event Contract adapter (see
+      workspace-notes/EVENT_CONTRACT_SPEC.md and EVENT_CONTRACT_OPENAPI.yaml)
+      -- an additional, uniform layer alongside the transaction-specific
+      routes above, not a replacement for them.
 
 paths:
   /healthz:
@@ -593,6 +599,114 @@ paths:
                 items:
                   $ref: "#/components/schemas/CategorySpend"
 
+  /events/log:
+    post:
+      operationId: logEvent
+      tags: [events]
+      summary: Log one event (Universal Event Contract)
+      description: >-
+        Only event_type "transaction" is supported. Writes a normal
+        bank_transactions row against a lazily-created synthetic "Manual
+        Entries" account, so a manually-logged event shows up in the
+        regular transaction list/aggregations like any other transaction.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EventLogRequest"
+      responses:
+        "200":
+          description: Logged
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogEventResult"
+        "400":
+          description: Unknown event_type
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /events:
+    get:
+      operationId: getEvents
+      tags: [events]
+      summary: Query events (Universal Event Contract)
+      parameters:
+        - name: start
+          in: query
+          required: true
+          description: Inclusive start date, YYYY-MM-DD
+          schema:
+            type: string
+        - name: end
+          in: query
+          required: true
+          description: Inclusive end date, YYYY-MM-DD
+          schema:
+            type: string
+        - name: event_type
+          in: query
+          required: false
+          description: 'Only "transaction" is valid for this tracker; omit for all (same result).'
+          schema:
+            type: ["string", "null"]
+        - name: source
+          in: query
+          required: false
+          description: Filter to one source (e.g. "plaid" or "manual"); omit for all.
+          schema:
+            type: ["string", "null"]
+      responses:
+        "200":
+          description: Matching events
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EventsQueryResult"
+
+  /aggregations/{aggType}:
+    get:
+      operationId: getEventAggregations
+      tags: [events]
+      summary: Sum event amounts grouped by one dimension (Universal Event Contract)
+      description: >-
+        Deliberately simple, uniform semantics matching every other
+        tracker's adapter -- a flat sum of `amount` per group, not
+        finance's richer per-receipt-item category-splitting (see
+        GET /dashboard/spending-by-category for that). `unit` is always
+        "usd": every bank_transactions row already defaults to USD, and
+        true multi-currency aggregation is a real gap this endpoint
+        doesn't attempt to solve.
+      parameters:
+        - name: aggType
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [by_category, by_source, by_event_type]
+        - name: start
+          in: query
+          required: true
+          description: Inclusive start date, YYYY-MM-DD
+          schema:
+            type: string
+        - name: end
+          in: query
+          required: true
+          description: Inclusive end date, YYYY-MM-DD
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Aggregated totals
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AggregationsResponse"
+
 components:
   schemas:
     HealthStatus:
@@ -1027,3 +1141,123 @@ components:
           type: number
         count:
           type: integer
+
+    EventLogRequest:
+      type: object
+      description: >-
+        Core Event Shape, as a request body. `event_type` must be
+        "transaction" -- the only event type this tracker has. See
+        EVENT_CONTRACT_OPENAPI.yaml for the tracker-agnostic version of
+        this shape.
+      required: [event_type, occurred_at]
+      properties:
+        event_type:
+          type: string
+          enum: [transaction]
+        occurred_at:
+          type: string
+          description: Maps to bank_transactions.date, YYYY-MM-DD.
+        amount:
+          type: number
+          default: 0
+          description: The transaction's dollar amount (signed -- positive spending, negative income).
+        source:
+          type: ["string", "null"]
+          description: Defaults to "manual" for events logged through this endpoint.
+        source_id:
+          type: ["string", "null"]
+        category:
+          type: ["string", "null"]
+          description: >-
+            Maps to bank_transactions.userCategory. Valid values come from
+            GET /transactions/categories (defaults + user-created) -- not a
+            fixed enum in this schema since that list is dynamic.
+        hidden:
+          type: boolean
+          default: false
+          description: Maps directly to bank_transactions.ignored.
+        status:
+          type: ["string", "null"]
+          description: >-
+            Not persisted. Finance's real lifecycle field is `pending`
+            (a boolean, surfaced in `metadata.pending` on read) --
+            deliberately not generalized into a string enum, per
+            EVENT_CONTRACT_SPEC.md's Resolved Decision #3.
+        metadata:
+          type: object
+          additionalProperties: true
+          default: {}
+          description: >-
+            merchantName, merchantNameRaw, currency (all optional). Not a
+            fixed schema -- see EventLogRequest's description.
+
+    Event:
+      type: object
+      description: Core Event Shape, as returned by GET /events.
+      required: [id, user_id, event_type, occurred_at, created_at, amount]
+      properties:
+        id:
+          type: string
+        user_id:
+          type: integer
+        event_type:
+          type: string
+          enum: [transaction]
+        category:
+          type: ["string", "null"]
+        occurred_at:
+          type: string
+        created_at:
+          type: string
+        amount:
+          type: number
+        source:
+          type: ["string", "null"]
+        source_id:
+          type: ["string", "null"]
+        hidden:
+          type: boolean
+          default: false
+        status:
+          type: ["string", "null"]
+        metadata:
+          type: object
+          additionalProperties: true
+          default: {}
+
+    LogEventResult:
+      type: object
+      required: [status, id]
+      properties:
+        status:
+          type: string
+        id:
+          type: string
+
+    EventsQueryResult:
+      type: object
+      required: [events, total]
+      properties:
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/Event"
+        total:
+          type: integer
+
+    AggregationsResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            type: object
+            additionalProperties:
+              oneOf:
+                - type: string
+                - type: number
+            description: >-
+              A dynamic group-dimension key ("category", "source", or
+              "event_type", whichever aggType was requested) plus fixed
+              total_amount (number) and unit (string, always "usd") fields.
