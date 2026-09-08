@@ -13,6 +13,16 @@ export interface ErrorResponse {
   error: string;
 }
 
+export interface UserCategory {
+  id: number;
+  name: string;
+  /** @nullable */
+  color: string | null;
+  /** @nullable */
+  icon: string | null;
+  createdAt: string;
+}
+
 export interface Account {
   id: string;
   institutionId: string;
@@ -413,6 +423,23 @@ to?: string | null;
  * @nullable
  */
 search?: string | null;
+};
+
+export type CreateUserCategoryBody = {
+  name: string;
+  /** @nullable */
+  color?: string | null;
+  /** @nullable */
+  icon?: string | null;
+};
+
+export type SetCategoryColorBody = {
+  name: string;
+  /**
+     * #rrggbb hex string, or null to clear the override and fall back to the app's built-in default color
+     * @nullable
+     */
+  color: string | null;
 };
 
 export type ListReceiptsParams = {

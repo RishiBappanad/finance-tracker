@@ -16,7 +16,11 @@ export default defineConfig({
   test: {
     environment: "node",
     globals: false,
-    include: ["tests/integration/user-scoping-live.test.ts", "tests/integration/events-adapter-live.test.ts"],
+    include: [
+      "tests/integration/user-scoping-live.test.ts",
+      "tests/integration/events-adapter-live.test.ts",
+      "tests/integration/categories-live.test.ts",
+    ],
     testTimeout: 30_000,
     env: {
       NODE_ENV: "test",

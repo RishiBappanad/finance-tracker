@@ -14,7 +14,8 @@ import {
 import { MultiSelectFilter } from "@/components/multi-select-filter";
 import { TransactionRow, type TransactionData } from "@/components/transaction-row";
 import { API_BASE, authFetch } from "@/lib/api";
-import { getCategoryColor } from "@/lib/category-colors";
+import { resolveCategoryColor } from "@/lib/category-colors";
+import { useListUserCategories, useSetCategoryColor } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 
@@ -48,6 +49,21 @@ export default function CashFlow() {
   const [isCategorizing, setIsCategorizing] = useState(false);
   const queryClient = useQueryClient();
   const { toast } = useToast();
+
+  const { data: userCategories } = useListUserCategories();
+  const categoryColorOverrides = Object.fromEntries(
+    (userCategories ?? []).filter((c) => c.color).map((c) => [c.name, c.color as string])
+  );
+  const setCategoryColor = useSetCategoryColor({
+    mutation: {
+      onSuccess: () => {
+        queryClient.invalidateQueries({ queryKey: ["/api/categories"] });
+      },
+      onError: () => {
+        toast({ title: "Error", description: "Could not save category color", variant: "destructive" });
+      },
+    },
+  });
 
   const endpoint = mode === "spending"
     ? "/api/transactions/spending-by-category"
@@ -294,7 +310,7 @@ export default function CashFlow() {
                     {chartData.map((entry) => (
                       <Cell
                         key={entry.category}
-                        fill={getCategoryColor(entry.category)}
+                        fill={resolveCategoryColor(entry.category, categoryColorOverrides)}
                         opacity={selectedCategory && selectedCategory !== entry.category ? 0.4 : 1}
                       />
                     ))}
@@ -331,10 +347,24 @@ export default function CashFlow() {
                     className={`p-4 flex items-center gap-3 cursor-pointer transition-colors ${isSelected ? "bg-secondary/30" : "hover:bg-secondary/10"}`}
                     onClick={() => setSelectedCategory(isSelected ? null : item.category)}
                   >
-                    <div
-                      className="h-3 w-3 rounded-full shrink-0"
-                      style={{ backgroundColor: getCategoryColor(item.category) }}
-                    />
+                    {item.category === "Uncategorized" ? (
+                      <div
+                        className="h-3 w-3 rounded-full shrink-0"
+                        style={{ backgroundColor: resolveCategoryColor(item.category, categoryColorOverrides) }}
+                        title="Uncategorized isn't a real category, so its color can't be customized"
+                      />
+                    ) : (
+                      <input
+                        type="color"
+                        value={resolveCategoryColor(item.category, categoryColorOverrides)}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) =>
+                          setCategoryColor.mutate({ data: { name: item.category, color: e.target.value } })
+                        }
+                        title={`Change color for ${item.category}`}
+                        className="h-3 w-3 shrink-0 rounded-full border-0 p-0 cursor-pointer appearance-none [&::-webkit-color-swatch-wrapper]:p-0 [&::-webkit-color-swatch]:rounded-full [&::-webkit-color-swatch]:border-0"
+                      />
+                    )}
                     <div className="flex-1 min-w-0">
                       <div className="flex justify-between items-center">
                         <span className="text-sm font-medium truncate">{item.category}</span>
@@ -346,7 +376,7 @@ export default function CashFlow() {
                             className="h-full rounded-full transition-all"
                             style={{
                               width: `${pct}%`,
-                              backgroundColor: getCategoryColor(item.category),
+                              backgroundColor: resolveCategoryColor(item.category, categoryColorOverrides),
                             }}
                           />
                         </div>

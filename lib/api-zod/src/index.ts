@@ -12,3 +12,5 @@ export * from "./generated/types";
 // is TypeScript's own suggested fix for this class of ambiguity -- add
 // another line here if a future operation hits the same shape.
 export { GetEventAggregationsParams } from "./generated/api";
+// Same collision, this time on two operations' request-body types.
+export { CreateUserCategoryBody, SetCategoryColorBody } from "./generated/api";

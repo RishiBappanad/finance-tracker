@@ -17,6 +17,8 @@ tags:
     description: Scanned receipt operations
   - name: matches
     description: Receipt-transaction reconciliation
+  - name: categories
+    description: User-created categories and per-category color overrides
   - name: dashboard
     description: Summary and analytics
   - name: events
@@ -218,6 +220,105 @@ paths:
                 type: array
                 items:
                   type: string
+
+  /categories:
+    get:
+      operationId: listUserCategories
+      tags: [categories]
+      summary: List the current user's category rows -- user-created categories, and any color/icon override set on a default category's name
+      responses:
+        "200":
+          description: The user's category rows
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/UserCategory"
+    post:
+      operationId: createUserCategory
+      tags: [categories]
+      summary: Create a new custom category
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                color:
+                  type: ["string", "null"]
+                icon:
+                  type: ["string", "null"]
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserCategory"
+        "400":
+          description: Missing/invalid name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: A category with this name already exists for this user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /categories/color:
+    put:
+      operationId: setCategoryColor
+      tags: [categories]
+      summary: Set (or clear) the display color for a category name, default or user-created alike
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, color]
+              properties:
+                name:
+                  type: string
+                color:
+                  type: ["string", "null"]
+                  description: "#rrggbb hex string, or null to clear the override and fall back to the app's built-in default color"
+      responses:
+        "200":
+          description: The upserted category row
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserCategory"
+        "400":
+          description: Missing name, invalid color, or unknown category name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /categories/{id}:
+    delete:
+      operationId: deleteUserCategory
+      tags: [categories]
+      summary: Delete a user-created category
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
 
   /receipts:
     get:
@@ -721,6 +822,22 @@ components:
       required: [error]
       properties:
         error:
+          type: string
+
+    # ── CATEGORY ─────────────────────────────────────────────────────────────
+    UserCategory:
+      type: object
+      required: [id, name, color, icon, createdAt]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        color:
+          type: ["string", "null"]
+        icon:
+          type: ["string", "null"]
+        createdAt:
           type: string
 
     # ── ACCOUNT ──────────────────────────────────────────────────────────────

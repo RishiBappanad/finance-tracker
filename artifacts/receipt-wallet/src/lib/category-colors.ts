@@ -41,3 +41,12 @@ export const DEFAULT_CATEGORY_COLOR = "#9ca3af";
 export function getCategoryColor(category: string): string {
   return CATEGORY_COLORS[category] ?? DEFAULT_CATEGORY_COLOR;
 }
+
+// Per-user color overrides, on top of the built-in defaults above --
+// backed by PUT /categories/color (upserts a user_categories row keyed on
+// (userId, name), whether that name is a default category or an existing
+// custom one) and GET /categories (returns all of the user's rows, used
+// here as the override source).
+export function resolveCategoryColor(category: string, overrides: Record<string, string>): string {
+  return overrides[category] ?? getCategoryColor(category);
+}

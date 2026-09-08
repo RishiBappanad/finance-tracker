@@ -7,9 +7,9 @@ import { Link } from "wouter";
 import { Input } from "@/components/ui/input";
 import { TransactionRow, type TransactionData } from "@/components/transaction-row";
 import { MultiSelectFilter } from "@/components/multi-select-filter";
-import { useListAccounts } from "@workspace/api-client-react";
+import { useListAccounts, useListUserCategories } from "@workspace/api-client-react";
 import { API_BASE, authFetch } from "@/lib/api";
-import { getCategoryColor } from "@/lib/category-colors";
+import { resolveCategoryColor } from "@/lib/category-colors";
 import {
   LineChart,
   Line,
@@ -43,6 +43,10 @@ function formatCurrency(amount: number | null | undefined) {
 }
 
 export default function Dashboard() {
+  const { data: userCategories } = useListUserCategories();
+  const categoryColorOverrides = Object.fromEntries(
+    (userCategories ?? []).filter((c) => c.color).map((c) => [c.name, c.color as string])
+  );
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [recentTxns, setRecentTxns] = useState<TransactionData[]>([]);
   const [chartData, setChartData] = useState<any[]>([]);
@@ -286,7 +290,7 @@ export default function Dashboard() {
                     key={cat}
                     type="monotone"
                     dataKey={cat}
-                    stroke={getCategoryColor(cat)}
+                    stroke={resolveCategoryColor(cat, categoryColorOverrides)}
                     dot={false}
                     strokeWidth={2}
                     connectNulls

@@ -175,6 +175,64 @@ export const ListReceiptCategoriesResponse = zod.array(ListReceiptCategoriesResp
 
 
 /**
+ * @summary List the current user's category rows -- user-created categories, and any color/icon override set on a default category's name
+ */
+export const ListUserCategoriesResponseItem = zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "color": zod.string().nullable(),
+  "icon": zod.string().nullable(),
+  "createdAt": zod.string()
+})
+export const ListUserCategoriesResponse = zod.array(ListUserCategoriesResponseItem)
+
+
+/**
+ * @summary Create a new custom category
+ */
+export const CreateUserCategoryBody = zod.object({
+  "name": zod.string(),
+  "color": zod.string().nullish(),
+  "icon": zod.string().nullish()
+})
+
+export const CreateUserCategoryResponse = zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "color": zod.string().nullable(),
+  "icon": zod.string().nullable(),
+  "createdAt": zod.string()
+})
+
+
+/**
+ * @summary Set (or clear) the display color for a category name, default or user-created alike
+ */
+export const SetCategoryColorBody = zod.object({
+  "name": zod.string(),
+  "color": zod.string().nullable().describe('#rrggbb hex string, or null to clear the override and fall back to the app\'s built-in default color')
+})
+
+export const SetCategoryColorResponse = zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "color": zod.string().nullable(),
+  "icon": zod.string().nullable(),
+  "createdAt": zod.string()
+})
+
+
+/**
+ * @summary Delete a user-created category
+ */
+export const DeleteUserCategoryParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const DeleteUserCategoryResponse = zod.void()
+
+
+/**
  * @summary List all scanned receipts
  */
 export const ListReceiptsQueryParams = zod.object({

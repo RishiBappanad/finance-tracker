@@ -24,6 +24,7 @@ import type {
   AccountInput,
   AggregationsResponse,
   CategorySpend,
+  CreateUserCategoryBody,
   DashboardSummary,
   ErrorResponse,
   EventLogRequest,
@@ -49,8 +50,10 @@ import type {
   ReceiptSuggestions,
   ReceiptUpdate,
   ReconcileResult,
+  SetCategoryColorBody,
   SyncResult,
-  Transaction
+  Transaction,
+  UserCategory
 } from './api.schemas';
 
 import { customFetch } from '../custom-fetch';
@@ -835,6 +838,293 @@ export function useListReceiptCategories<TData = Awaited<ReturnType<typeof listR
 
 
 
+
+export const getListUserCategoriesUrl = () => {
+
+
+
+
+  return `/api/categories`
+}
+
+/**
+ * @summary List the current user's category rows -- user-created categories, and any color/icon override set on a default category's name
+ */
+export const listUserCategories = async ( options?: RequestInit): Promise<UserCategory[]> => {
+
+  return customFetch<UserCategory[]>(getListUserCategoriesUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListUserCategoriesQueryKey = () => {
+    return [
+    `/api/categories`
+    ] as const;
+    }
+
+
+export const getListUserCategoriesQueryOptions = <TData = Awaited<ReturnType<typeof listUserCategories>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listUserCategories>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListUserCategoriesQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listUserCategories>>> = ({ signal }) => listUserCategories({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listUserCategories>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type ListUserCategoriesQueryResult = NonNullable<Awaited<ReturnType<typeof listUserCategories>>>
+export type ListUserCategoriesQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary List the current user's category rows -- user-created categories, and any color/icon override set on a default category's name
+ */
+
+export function useListUserCategories<TData = Awaited<ReturnType<typeof listUserCategories>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listUserCategories>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getListUserCategoriesQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getCreateUserCategoryUrl = () => {
+
+
+
+
+  return `/api/categories`
+}
+
+/**
+ * @summary Create a new custom category
+ */
+export const createUserCategory = async (createUserCategoryBody: CreateUserCategoryBody, options?: RequestInit): Promise<UserCategory> => {
+
+  return customFetch<UserCategory>(getCreateUserCategoryUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(createUserCategoryBody)
+  }
+);}
+
+
+
+
+export const getCreateUserCategoryMutationOptions = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createUserCategory>>, TError,{data: BodyType<CreateUserCategoryBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof createUserCategory>>, TError,{data: BodyType<CreateUserCategoryBody>}, TContext> => {
+
+const mutationKey = ['createUserCategory'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof createUserCategory>>, {data: BodyType<CreateUserCategoryBody>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  createUserCategory(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type CreateUserCategoryMutationResult = NonNullable<Awaited<ReturnType<typeof createUserCategory>>>
+    export type CreateUserCategoryMutationBody = BodyType<CreateUserCategoryBody>
+    export type CreateUserCategoryMutationError = ErrorType<ErrorResponse>
+
+    /**
+ * @summary Create a new custom category
+ */
+export const useCreateUserCategory = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createUserCategory>>, TError,{data: BodyType<CreateUserCategoryBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof createUserCategory>>,
+        TError,
+        {data: BodyType<CreateUserCategoryBody>},
+        TContext
+      > => {
+      return useMutation(getCreateUserCategoryMutationOptions(options));
+    }
+
+export const getSetCategoryColorUrl = () => {
+
+
+
+
+  return `/api/categories/color`
+}
+
+/**
+ * @summary Set (or clear) the display color for a category name, default or user-created alike
+ */
+export const setCategoryColor = async (setCategoryColorBody: SetCategoryColorBody, options?: RequestInit): Promise<UserCategory> => {
+
+  return customFetch<UserCategory>(getSetCategoryColorUrl(),
+  {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(setCategoryColorBody)
+  }
+);}
+
+
+
+
+export const getSetCategoryColorMutationOptions = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof setCategoryColor>>, TError,{data: BodyType<SetCategoryColorBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof setCategoryColor>>, TError,{data: BodyType<SetCategoryColorBody>}, TContext> => {
+
+const mutationKey = ['setCategoryColor'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof setCategoryColor>>, {data: BodyType<SetCategoryColorBody>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  setCategoryColor(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type SetCategoryColorMutationResult = NonNullable<Awaited<ReturnType<typeof setCategoryColor>>>
+    export type SetCategoryColorMutationBody = BodyType<SetCategoryColorBody>
+    export type SetCategoryColorMutationError = ErrorType<ErrorResponse>
+
+    /**
+ * @summary Set (or clear) the display color for a category name, default or user-created alike
+ */
+export const useSetCategoryColor = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof setCategoryColor>>, TError,{data: BodyType<SetCategoryColorBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof setCategoryColor>>,
+        TError,
+        {data: BodyType<SetCategoryColorBody>},
+        TContext
+      > => {
+      return useMutation(getSetCategoryColorMutationOptions(options));
+    }
+
+export const getDeleteUserCategoryUrl = (id: number,) => {
+
+
+
+
+  return `/api/categories/${id}`
+}
+
+/**
+ * @summary Delete a user-created category
+ */
+export const deleteUserCategory = async (id: number, options?: RequestInit): Promise<void> => {
+
+  return customFetch<void>(getDeleteUserCategoryUrl(id),
+  {
+    ...options,
+    method: 'DELETE'
+
+
+  }
+);}
+
+
+
+
+export const getDeleteUserCategoryMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteUserCategory>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof deleteUserCategory>>, TError,{id: number}, TContext> => {
+
+const mutationKey = ['deleteUserCategory'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof deleteUserCategory>>, {id: number}> = (props) => {
+          const {id} = props ?? {};
+
+          return  deleteUserCategory(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type DeleteUserCategoryMutationResult = NonNullable<Awaited<ReturnType<typeof deleteUserCategory>>>
+
+    export type DeleteUserCategoryMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Delete a user-created category
+ */
+export const useDeleteUserCategory = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteUserCategory>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof deleteUserCategory>>,
+        TError,
+        {id: number},
+        TContext
+      > => {
+      return useMutation(getDeleteUserCategoryMutationOptions(options));
+    }
 
 export const getListReceiptsUrl = (params?: ListReceiptsParams,) => {
   const normalizedParams = new URLSearchParams();
