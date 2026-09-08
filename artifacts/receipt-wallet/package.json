@@ -72,6 +72,7 @@
     "zod": "catalog:"
   },
   "dependencies": {
-    "react-plaid-link": "^4.1.1"
+    "react-plaid-link": "^4.1.1",
+    "trackstack-ui": "^0.1.0"
   }
 }

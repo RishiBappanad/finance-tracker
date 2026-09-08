@@ -58,6 +58,15 @@
   --color-sidebar-accent-border: var(--sidebar-accent-border);
   --color-sidebar-ring: hsl(var(--sidebar-ring));
 
+  /* Aliased to the sidebar palette, not a separate design choice --
+     trackstack-ui's shared AppSwitcher/MobileAppSwitcher render against a
+     switcher-* token family so it can be dropped into any app; each app
+     points those tokens at whatever it already uses for its switcher rail. */
+  --color-switcher: hsl(var(--sidebar));
+  --color-switcher-foreground: hsl(var(--sidebar-foreground));
+  --color-switcher-border: hsl(var(--sidebar-border));
+  --color-switcher-active: hsl(var(--sidebar-accent));
+
   --font-sans: var(--app-font-sans);
   --font-serif: var(--app-font-serif);
   --font-mono: var(--app-font-mono);

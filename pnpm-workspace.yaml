@@ -35,3 +35,6 @@ onlyBuiltDependencies:
 
 allowBuilds:
   esbuild: false
+
+minimumReleaseAgeExclude:
+  - trackstack-ui@0.1.0

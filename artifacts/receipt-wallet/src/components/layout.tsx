@@ -13,7 +13,10 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/use-auth";
-import { AppSwitcher, MobileAppSwitcher } from "@/components/app-switcher";
+import { AppSwitcher, MobileAppSwitcher } from "trackstack-ui";
+
+const TRACKSTACK_AUTH_URL = import.meta.env.VITE_TRACKSTACK_AUTH_URL ?? "";
+const CURRENT_APP_ID = "finance";
 
 interface LayoutProps {
   children: ReactNode;
@@ -75,7 +78,7 @@ export function Layout({ children }: LayoutProps) {
   return (
     <div className="flex min-h-screen w-full bg-background">
       {/* App Switcher */}
-      <AppSwitcher />
+      <AppSwitcher authBaseUrl={TRACKSTACK_AUTH_URL} currentAppId={CURRENT_APP_ID} />
 
       {/* Desktop sidebar */}
       <aside className="w-64 flex-shrink-0 bg-sidebar border-r border-sidebar-border hidden md:flex flex-col">
@@ -114,7 +117,7 @@ export function Layout({ children }: LayoutProps) {
       
       <main className="flex-1 flex flex-col min-w-0 overflow-hidden">
         {/* Mobile: App switcher bar */}
-        <MobileAppSwitcher />
+        <MobileAppSwitcher authBaseUrl={TRACKSTACK_AUTH_URL} currentAppId={CURRENT_APP_ID} />
 
         {/* Mobile header */}
         <header className="h-14 md:hidden flex items-center px-4 border-b border-border bg-card gap-3">
