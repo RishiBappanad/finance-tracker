@@ -1,7 +1,7 @@
 // API base URL — controlled by VITE_API_BASE env var at build time.
 // Standalone domain: leave unset (defaults to "")
 // Behind proxy: set VITE_API_BASE=/finance
-export const API_BASE = import.meta.env.VITE_API_BASE ?? (import.meta.env.DEV ? "http://localhost:5001" : "");
+export const API_BASE = import.meta.env.VITE_API_BASE ?? (import.meta.env.DEV ? "http://localhost:5000" : "");
 
 const TOKEN_KEY = "auth_token";
 
