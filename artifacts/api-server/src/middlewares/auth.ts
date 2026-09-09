@@ -2,7 +2,19 @@ import { type Request, type Response, type NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { db, users } from "@workspace/db";
 
-const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-in-production";
+// Was `process.env.JWT_SECRET || "dev-secret-change-in-production"` -- a
+// silent fallback that let this service run with a guessable, publicly-
+// visible secret if the real one ever failed to load, instead of refusing
+// to start. This is exactly the failure mode that let a real JWT_SECRET
+// mismatch between this service and trackstack-auth (the token issuer) go
+// unnoticed for a while: tokens trackstack-auth issued were silently
+// rejected here, but the service itself looked healthy throughout. Failing
+// loudly at import time matches how trackstack-auth itself already
+// handles this.
+if (!process.env.JWT_SECRET) {
+  throw new Error("JWT_SECRET environment variable is required but was not provided.");
+}
+const JWT_SECRET = process.env.JWT_SECRET;
 
 // Tokens are issued by trackstack-auth, not this service. Its claim shape is
 // { accountId, email }. We keep the field name `userId` here (rather than
