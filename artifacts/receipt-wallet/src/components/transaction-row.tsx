@@ -1,23 +1,7 @@
 import { useState, useEffect } from "react";
-import { CheckCircle2, EyeOff, Eye } from "lucide-react";
+import { CheckCircle2, EyeOff, Eye, Users, Loader2 } from "lucide-react";
 import { API_BASE, authFetch } from "@/lib/api";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
+import { CategoryCombobox } from "@/components/category-combobox";
 import { Button } from "@/components/ui/button";
 
 export interface TransactionData {
@@ -79,11 +63,19 @@ interface TransactionRowProps {
   showCategoryBadge?: boolean;
   showIgnoreButton?: boolean;
   showMatchIcon?: boolean;
-  showBulkPrompt?: boolean;
+  // Offers an "Apply to all" action next to the category picker, letting
+  // the user opt into bulk-assigning this category to every transaction
+  // from the same merchant. Previously this was a required AlertDialog
+  // interrupting every single category change ("Just this one" / "Apply
+  // to all") -- replaced with a plain button the user clicks only when
+  // they actually want the bulk behavior, per explicit user feedback that
+  // the forced prompt was annoying.
+  showBulkApply?: boolean;
 
   // Callbacks
   onIgnore?: (id: string, ignored: boolean) => void;
   onCategoryChanged?: () => void;
+  onBulkApplied?: (result: { updated: number; merchantName: string; userCategory: string }) => void;
 }
 
 export function TransactionRow({
@@ -93,13 +85,14 @@ export function TransactionRow({
   showCategoryBadge = false,
   showIgnoreButton = false,
   showMatchIcon = true,
-  showBulkPrompt = false,
+  showBulkApply = false,
   onIgnore,
   onCategoryChanged,
+  onBulkApplied,
 }: TransactionRowProps) {
   const [categories, setCategories] = useState<string[]>(_categoriesCache ?? []);
   const [localCategory, setLocalCategory] = useState(txn.userCategory);
-  const [bulkDialog, setBulkDialog] = useState<{ category: string } | null>(null);
+  const [isBulkApplying, setIsBulkApplying] = useState(false);
 
   const merchant = txn.merchantName || txn.merchantNameRaw || "(No merchant)";
   const hasMerchant = !!(txn.merchantName || txn.merchantNameRaw);
@@ -126,118 +119,102 @@ export function TransactionRow({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ userCategory: category }),
       });
-      if (showBulkPrompt && hasMerchant) {
-        setBulkDialog({ category });
-      } else {
-        onCategoryChanged?.();
-      }
+      onCategoryChanged?.();
     } catch {
       setLocalCategory(txn.userCategory);
     }
   };
 
-  const handleBulkAssign = async () => {
-    if (!bulkDialog) return;
+  const handleApplyToAll = async () => {
+    if (!localCategory || !hasMerchant) return;
+    setIsBulkApplying(true);
     try {
-      await authFetch(`${API_BASE}/api/transactions/bulk-categorize`, {
+      const res = await authFetch(`${API_BASE}/api/transactions/bulk-categorize`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          merchantName: txn.merchantName || txn.merchantNameRaw,
-          userCategory: bulkDialog.category,
-        }),
+        body: JSON.stringify({ merchantName: merchant, userCategory: localCategory }),
       });
-    } catch {}
-    setBulkDialog(null);
-    onCategoryChanged?.();
-  };
-
-  const handleBulkSkip = () => {
-    setBulkDialog(null);
-    onCategoryChanged?.();
+      const result = await res.json();
+      onBulkApplied?.(result);
+    } finally {
+      setIsBulkApplying(false);
+    }
   };
 
   return (
-    <>
-      <div className={`flex items-center justify-between p-4 hover:bg-secondary/20 transition-colors gap-3 ${txn.ignored ? "opacity-50" : ""}`}>
-        {/* Left: merchant + metadata */}
-        <div className="flex flex-col min-w-0 flex-1">
-          <span className="text-sm font-medium text-foreground truncate">{merchant}</span>
-          <span className="text-xs text-muted-foreground">
-            {txn.date}
-            {showAccountInfo && txn.accountName && ` • ${txn.accountName}`}
-            {showAccountInfo && txn.accountMask && ` ••${txn.accountMask}`}
-          </span>
-        </div>
+    <div className={`flex items-center justify-between p-4 hover:bg-secondary/20 transition-colors gap-3 ${txn.ignored ? "opacity-50" : ""}`}>
+      {/* Left: merchant + metadata */}
+      <div className="flex flex-col min-w-0 flex-1">
+        <span className="text-sm font-medium text-foreground truncate">{merchant}</span>
+        <span className="text-xs text-muted-foreground">
+          {txn.date}
+          {showAccountInfo && txn.accountName && ` • ${txn.accountName}`}
+          {showAccountInfo && txn.accountMask && ` ••${txn.accountMask}`}
+        </span>
+      </div>
 
-        {/* Category picker */}
-        {showCategoryPicker && categories.length > 0 && (
-          <Select value={localCategory || ""} onValueChange={handleCategoryChange}>
-            <SelectTrigger className="w-[150px] h-8 text-xs shrink-0">
-              <SelectValue placeholder="Assign category" />
-            </SelectTrigger>
-            <SelectContent>
-              {categories.map((cat) => (
-                <SelectItem key={cat} value={cat} className="text-xs">
-                  {cat}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        )}
-
-        {/* Category badge (when no picker) */}
-        {showCategoryBadge && !showCategoryPicker && localCategory && (
-          <span className="text-xs bg-secondary px-2 py-0.5 rounded-full text-muted-foreground shrink-0">
-            {localCategory}
-          </span>
-        )}
-
-        {/* Right: actions + amount */}
-        <div className="flex items-center gap-2 shrink-0">
-          {showIgnoreButton && onIgnore && (
+      {/* Category picker */}
+      {showCategoryPicker && categories.length > 0 && (
+        <div className="flex items-center gap-1 shrink-0">
+          <CategoryCombobox
+            categories={categories}
+            value={localCategory}
+            onChange={handleCategoryChange}
+            placeholder="Assign category"
+            triggerClassName="w-[150px] h-8"
+          />
+          {showBulkApply && hasMerchant && localCategory && (
             <Button
               variant="ghost"
               size="icon"
-              className="h-7 w-7"
-              onClick={() => onIgnore(txn.id, !txn.ignored)}
-              title={txn.ignored ? "Include in spending" : "Ignore from spending"}
+              className="h-8 w-8 shrink-0"
+              onClick={handleApplyToAll}
+              disabled={isBulkApplying}
+              title={`Apply "${localCategory}" to all "${merchant}" transactions`}
             >
-              {txn.ignored ? (
-                <Eye className="h-3.5 w-3.5 text-muted-foreground" />
+              {isBulkApplying ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
               ) : (
-                <EyeOff className="h-3.5 w-3.5 text-muted-foreground" />
+                <Users className="h-3.5 w-3.5 text-muted-foreground" />
               )}
             </Button>
           )}
-
-          {showMatchIcon && txn.matchId && (
-            <CheckCircle2 className="h-4 w-4 text-green-500" />
-          )}
-
-          <span className={`text-sm font-mono font-medium w-20 text-right ${isCredit ? "text-green-600" : "text-foreground"}`}>
-            {displayAmount}
-          </span>
         </div>
-      </div>
-
-      {/* Bulk assign dialog */}
-      {showBulkPrompt && (
-        <AlertDialog open={!!bulkDialog} onOpenChange={(open) => !open && handleBulkSkip()}>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Apply to all "{merchant}" transactions?</AlertDialogTitle>
-              <AlertDialogDescription>
-                Assign <strong>{bulkDialog?.category}</strong> to all transactions from this vendor, including past and future ones.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel onClick={handleBulkSkip}>Just this one</AlertDialogCancel>
-              <AlertDialogAction onClick={handleBulkAssign}>Apply to all</AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
       )}
-    </>
+
+      {/* Category badge (when no picker) */}
+      {showCategoryBadge && !showCategoryPicker && localCategory && (
+        <span className="text-xs bg-secondary px-2 py-0.5 rounded-full text-muted-foreground shrink-0">
+          {localCategory}
+        </span>
+      )}
+
+      {/* Right: actions + amount */}
+      <div className="flex items-center gap-2 shrink-0">
+        {showIgnoreButton && onIgnore && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
+            onClick={() => onIgnore(txn.id, !txn.ignored)}
+            title={txn.ignored ? "Include in spending" : "Ignore from spending"}
+          >
+            {txn.ignored ? (
+              <Eye className="h-3.5 w-3.5 text-muted-foreground" />
+            ) : (
+              <EyeOff className="h-3.5 w-3.5 text-muted-foreground" />
+            )}
+          </Button>
+        )}
+
+        {showMatchIcon && txn.matchId && (
+          <CheckCircle2 className="h-4 w-4 text-green-500" />
+        )}
+
+        <span className={`text-sm font-mono font-medium w-20 text-right ${isCredit ? "text-green-600" : "text-foreground"}`}>
+          {displayAmount}
+        </span>
+      </div>
+    </div>
   );
 }

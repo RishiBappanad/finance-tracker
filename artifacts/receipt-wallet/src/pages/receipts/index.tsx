@@ -4,6 +4,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Link } from "wouter";
 import { FileText, Plus, Search, Camera, Loader2, Check, X, Edit2 } from "lucide-react";
+import { CategoryCombobox } from "@/components/category-combobox";
 import { useListReceipts, useListReceiptCategories } from "@workspace/api-client-react";
 import { API_BASE, authFetch } from "@/lib/api";
 import { useQueryClient } from "@tanstack/react-query";
@@ -458,16 +459,13 @@ function ReceiptVerification({
                 </div>
                 {/* Category */}
                 <div className="w-36 space-y-1">
-                  <select
-                    value={item.category || ""}
-                    onChange={(e) => updateItem(i, "category", e.target.value || null)}
-                    className="w-full h-8 px-2 rounded-md border bg-background text-xs text-foreground"
-                  >
-                    <option value="">Category...</option>
-                    {(categories ?? []).map((cat) => (
-                      <option key={cat} value={cat}>{cat}</option>
-                    ))}
-                  </select>
+                  <CategoryCombobox
+                    categories={categories ?? []}
+                    value={item.category}
+                    onChange={(value) => updateItem(i, "category", value)}
+                    placeholder="Category..."
+                    triggerClassName="w-full h-8"
+                  />
                 </div>
                 {/* Line Total (read-only) */}
                 <div className="w-20 flex items-center justify-end">

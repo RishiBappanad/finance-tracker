@@ -1,11 +1,5 @@
 import { Card } from "@/components/ui/card";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { CategoryCombobox } from "@/components/category-combobox";
 import { Calendar, ArrowLeft, CheckCircle2, Store, Loader2, X, Check } from "lucide-react";
 import { Link, useParams } from "wouter";
 import { Button } from "@/components/ui/button";
@@ -160,21 +154,13 @@ export default function ReceiptDetail() {
                       </p>
                     </div>
                     <div className="w-40">
-                      <Select
-                        value={item.category || ""}
-                        onValueChange={(value) => handleCategoryChange(item.id, value)}
-                      >
-                        <SelectTrigger className="h-8 text-xs">
-                          <SelectValue placeholder="Uncategorized" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {(categories ?? []).map((cat) => (
-                            <SelectItem key={cat} value={cat} className="text-xs">
-                              {cat}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      <CategoryCombobox
+                        categories={categories ?? []}
+                        value={item.category ?? null}
+                        onChange={(value) => handleCategoryChange(item.id, value)}
+                        placeholder="Uncategorized"
+                        triggerClassName="w-full h-8"
+                      />
                     </div>
                     <span className="font-mono text-sm text-right w-20 shrink-0">
                       ${item.lineTotal.toFixed(2)}

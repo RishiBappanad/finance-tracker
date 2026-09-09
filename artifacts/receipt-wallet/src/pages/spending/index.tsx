@@ -425,9 +425,17 @@ export default function CashFlow() {
                 showAccountInfo
                 showCategoryPicker
                 showIgnoreButton
-                showBulkPrompt
+                showBulkApply
                 onIgnore={handleIgnore}
                 onCategoryChanged={() => {
+                  fetchData();
+                  if (selectedCategory) fetchTransactionsForCategory(selectedCategory);
+                }}
+                onBulkApplied={(result) => {
+                  toast({
+                    title: "Category applied",
+                    description: `Set "${result.userCategory}" on ${result.updated} transaction${result.updated === 1 ? "" : "s"} from ${result.merchantName}.`,
+                  });
                   fetchData();
                   if (selectedCategory) fetchTransactionsForCategory(selectedCategory);
                 }}

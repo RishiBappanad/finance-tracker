@@ -419,9 +419,16 @@ export default function Transactions() {
                   transaction={txn}
                   showAccountInfo
                   showCategoryPicker
-                  showBulkPrompt
+                  showBulkApply
                   showMatchIcon
                   onCategoryChanged={() => queryClient.invalidateQueries({ queryKey: ["/api/transactions"] })}
+                  onBulkApplied={(result) => {
+                    toast({
+                      title: "Category applied",
+                      description: `Set "${result.userCategory}" on ${result.updated} transaction${result.updated === 1 ? "" : "s"} from ${result.merchantName}.`,
+                    });
+                    queryClient.invalidateQueries({ queryKey: ["/api/transactions"] });
+                  }}
                 />
               ))}
             </div>
