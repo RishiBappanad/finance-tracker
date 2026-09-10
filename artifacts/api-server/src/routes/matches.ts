@@ -4,8 +4,8 @@ import {
   receiptTransactionMatches,
   scannedReceipts,
   bankTransactions,
-  accounts,
-  institutions,
+  joinTransactionOwnership,
+  ownedByUser,
 } from "@workspace/db";
 import { eq, and, isNull, sql } from "drizzle-orm";
 import { CreateMatchBody, UpdateMatchBody, ListMatchesQueryParams } from "@workspace/api-zod";
@@ -56,7 +56,7 @@ router.post("/run", async (req, res) => {
     .select({ id: receiptTransactionMatches.bankTransactionId })
     .from(receiptTransactionMatches);
 
-  const unmatchedTxns = await db
+  const unmatchedTxns = await joinTransactionOwnership(db
     .select({
       id: bankTransactions.id,
       amount: bankTransactions.amount,
@@ -64,12 +64,10 @@ router.post("/run", async (req, res) => {
       merchantName: bankTransactions.merchantName,
       merchantNameRaw: bankTransactions.merchantNameRaw,
     })
-    .from(bankTransactions)
-    .innerJoin(accounts, eq(bankTransactions.accountId, accounts.id))
-    .innerJoin(institutions, eq(accounts.institutionId, institutions.id))
+    .from(bankTransactions).$dynamic())
     .where(
       and(
-        eq(institutions.userId, userId),
+        ownedByUser(userId),
         sql`${bankTransactions.id} NOT IN (${matchedTxnIds})`
       )
     );
@@ -194,12 +192,10 @@ router.post("/", async (req, res) => {
     .limit(1);
   if (!receiptOwned) return void res.status(404).json({ error: "Receipt not found" });
 
-  const [txnOwned] = await db
+  const [txnOwned] = await joinTransactionOwnership(db
     .select({ id: bankTransactions.id })
-    .from(bankTransactions)
-    .innerJoin(accounts, eq(bankTransactions.accountId, accounts.id))
-    .innerJoin(institutions, eq(accounts.institutionId, institutions.id))
-    .where(and(eq(bankTransactions.id, parsed.data.bankTransactionId), eq(institutions.userId, userId)))
+    .from(bankTransactions).$dynamic())
+    .where(and(eq(bankTransactions.id, parsed.data.bankTransactionId), ownedByUser(userId)))
     .limit(1);
   if (!txnOwned) return void res.status(404).json({ error: "Transaction not found" });
 

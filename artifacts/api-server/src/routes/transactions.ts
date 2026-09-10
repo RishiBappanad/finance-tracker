@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
-import { bankTransactions, accounts, institutions, receiptTransactionMatches } from "@workspace/db";
+import { bankTransactions, accounts, institutions, receiptTransactionMatches, joinTransactionOwnership, ownedByUser } from "@workspace/db";
 import { eq, and, gte, lte, like, sql, isNull, inArray } from "drizzle-orm";
 import { ListTransactionsQueryParams } from "@workspace/api-zod";
 import { getPlaidAdapter } from "../services/plaid.js";
@@ -38,7 +38,7 @@ function serializeTxn(t: any, matchId?: number | null) {
 // transactions to any authenticated caller. Confirmed exploited: the
 // frontend's Transactions page calls this directly.
 router.get("/ignored", async (req, res) => {
-  const rows = await db
+  const rows = await joinTransactionOwnership(db
     .select({
       id: bankTransactions.id,
       accountId: bankTransactions.accountId,
@@ -56,10 +56,8 @@ router.get("/ignored", async (req, res) => {
       pending: bankTransactions.pending,
       createdAt: bankTransactions.createdAt,
     })
-    .from(bankTransactions)
-    .innerJoin(accounts, eq(bankTransactions.accountId, accounts.id))
-    .innerJoin(institutions, eq(accounts.institutionId, institutions.id))
-    .where(and(eq(bankTransactions.ignored, true), eq(institutions.userId, req.user!.userId)))
+    .from(bankTransactions).$dynamic())
+    .where(and(eq(bankTransactions.ignored, true), ownedByUser(req.user!.userId)))
     .orderBy(bankTransactions.date);
 
   res.json(rows.map((r) => serializeTxn(r)));
@@ -73,7 +71,7 @@ router.get("/unmatched", async (req, res) => {
     .select({ id: receiptTransactionMatches.bankTransactionId })
     .from(receiptTransactionMatches);
 
-  const rows = await db
+  const rows = await joinTransactionOwnership(db
     .select({
       id: bankTransactions.id,
       accountId: bankTransactions.accountId,
@@ -91,10 +89,8 @@ router.get("/unmatched", async (req, res) => {
       pending: bankTransactions.pending,
       createdAt: bankTransactions.createdAt,
     })
-    .from(bankTransactions)
-    .innerJoin(accounts, eq(bankTransactions.accountId, accounts.id))
-    .innerJoin(institutions, eq(accounts.institutionId, institutions.id))
-    .where(and(eq(institutions.userId, userId), sql`${bankTransactions.id} NOT IN (${matched})`))
+    .from(bankTransactions).$dynamic())
+    .where(and(ownedByUser(userId), sql`${bankTransactions.id} NOT IN (${matched})`))
     .orderBy(bankTransactions.date);
 
   res.json(rows.map((r) => serializeTxn(r)));
@@ -104,7 +100,7 @@ router.get("/", async (req, res) => {
   const parsed = ListTransactionsQueryParams.safeParse(req.query);
   const params = parsed.success ? parsed.data : {};
 
-  const conditions = [eq(institutions.userId, req.user!.userId)];
+  const conditions = [ownedByUser(req.user!.userId)];
   if (params.accountId) conditions.push(eq(bankTransactions.accountId, params.accountId));
   if (params.pending != null) conditions.push(eq(bankTransactions.pending, params.pending));
   if (params.from) conditions.push(gte(bankTransactions.date, params.from));
@@ -112,7 +108,7 @@ router.get("/", async (req, res) => {
   if (params.search)
     conditions.push(like(bankTransactions.merchantName, `%${params.search}%`));
 
-  const rows = await db
+  const rows = await joinTransactionOwnership(db
     .select({
       id: bankTransactions.id,
       accountId: bankTransactions.accountId,
@@ -130,9 +126,7 @@ router.get("/", async (req, res) => {
       pending: bankTransactions.pending,
       createdAt: bankTransactions.createdAt,
     })
-    .from(bankTransactions)
-    .leftJoin(accounts, eq(bankTransactions.accountId, accounts.id))
-    .innerJoin(institutions, eq(accounts.institutionId, institutions.id))
+    .from(bankTransactions).$dynamic())
     .where(conditions.length ? and(...conditions) : undefined)
     .orderBy(bankTransactions.date);
 
@@ -264,31 +258,27 @@ router.post("/sync", async (req, res) => {
 // every user's vendor/merchant names to any authenticated caller.
 router.get("/vendors", async (req, res) => {
   const userId = req.user!.userId;
-  const rows = await db
+  const rows = await joinTransactionOwnership(db
     .select({
       vendor: bankTransactions.merchantName,
     })
-    .from(bankTransactions)
-    .innerJoin(accounts, eq(bankTransactions.accountId, accounts.id))
-    .innerJoin(institutions, eq(accounts.institutionId, institutions.id))
+    .from(bankTransactions).$dynamic())
     .where(and(
-      eq(institutions.userId, userId),
+      ownedByUser(userId),
       sql`${bankTransactions.merchantName} IS NOT NULL AND ${bankTransactions.merchantName} != ''`
     ))
     .groupBy(bankTransactions.merchantName)
     .orderBy(bankTransactions.merchantName);
 
   // Also include merchantNameRaw for transactions without a merchantName
-  const rawRows = await db
+  const rawRows = await joinTransactionOwnership(db
     .select({
       vendor: bankTransactions.merchantNameRaw,
     })
-    .from(bankTransactions)
-    .innerJoin(accounts, eq(bankTransactions.accountId, accounts.id))
-    .innerJoin(institutions, eq(accounts.institutionId, institutions.id))
+    .from(bankTransactions).$dynamic())
     .where(
       and(
-        eq(institutions.userId, userId),
+        ownedByUser(userId),
         sql`${bankTransactions.merchantName} IS NULL AND ${bankTransactions.merchantNameRaw} IS NOT NULL AND ${bankTransactions.merchantNameRaw} != ''`
       )
     )
@@ -328,13 +318,11 @@ router.post("/bulk-categorize", async (req, res) => {
     return void res.status(400).json({ error: "Invalid category" });
   }
 
-  const ownedIds = await db
+  const ownedIds = await joinTransactionOwnership(db
     .select({ id: bankTransactions.id })
-    .from(bankTransactions)
-    .innerJoin(accounts, eq(bankTransactions.accountId, accounts.id))
-    .innerJoin(institutions, eq(accounts.institutionId, institutions.id))
+    .from(bankTransactions).$dynamic())
     .where(and(
-      eq(institutions.userId, userId),
+      ownedByUser(userId),
       sql`(${bankTransactions.merchantName} = ${merchantName} OR (${bankTransactions.merchantName} IS NULL AND ${bankTransactions.merchantNameRaw} = ${merchantName}))`
     ));
 
@@ -359,7 +347,7 @@ router.post("/bulk-categorize", async (req, res) => {
 // writing results into other users' data.
 router.post("/categorize", async (req, res) => {
   const userId = req.user!.userId;
-  const uncategorized = await db
+  const uncategorized = await joinTransactionOwnership(db
     .select({
       id: bankTransactions.id,
       merchantName: bankTransactions.merchantName,
@@ -368,10 +356,8 @@ router.post("/categorize", async (req, res) => {
       categoryPrimary: bankTransactions.categoryPrimary,
       categoryDetail: bankTransactions.categoryDetail,
     })
-    .from(bankTransactions)
-    .innerJoin(accounts, eq(bankTransactions.accountId, accounts.id))
-    .innerJoin(institutions, eq(accounts.institutionId, institutions.id))
-    .where(and(eq(institutions.userId, userId), isNull(bankTransactions.userCategory)));
+    .from(bankTransactions).$dynamic())
+    .where(and(ownedByUser(userId), isNull(bankTransactions.userCategory)));
 
   if (uncategorized.length === 0) {
     return void res.json({ categorized: 0, total: 0, breakdown: {} });
@@ -427,14 +413,12 @@ router.patch("/:transactionId", async (req, res) => {
   const { userCategory, ignored } = req.body;
 
   // Verify the transaction belongs to this user
-  const ownership = await db
+  const ownership = await joinTransactionOwnership(db
     .select({ id: bankTransactions.id })
-    .from(bankTransactions)
-    .innerJoin(accounts, eq(bankTransactions.accountId, accounts.id))
-    .innerJoin(institutions, eq(accounts.institutionId, institutions.id))
+    .from(bankTransactions).$dynamic())
     .where(and(
       eq(bankTransactions.id, req.params.transactionId),
-      eq(institutions.userId, req.user!.userId)
+      ownedByUser(req.user!.userId)
     ))
     .limit(1);
 
@@ -479,7 +463,7 @@ router.patch("/:transactionId", async (req, res) => {
 });
 
 router.get("/:transactionId", async (req, res) => {
-  const rows = await db
+  const rows = await joinTransactionOwnership(db
     .select({
       id: bankTransactions.id,
       accountId: bankTransactions.accountId,
@@ -497,12 +481,10 @@ router.get("/:transactionId", async (req, res) => {
       pending: bankTransactions.pending,
       createdAt: bankTransactions.createdAt,
     })
-    .from(bankTransactions)
-    .innerJoin(accounts, eq(bankTransactions.accountId, accounts.id))
-    .innerJoin(institutions, eq(accounts.institutionId, institutions.id))
+    .from(bankTransactions).$dynamic())
     .where(and(
       eq(bankTransactions.id, req.params.transactionId),
-      eq(institutions.userId, req.user!.userId)
+      ownedByUser(req.user!.userId)
     ))
     .limit(1);
 

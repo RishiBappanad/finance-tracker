@@ -4,8 +4,9 @@ import {
   scannedReceipts,
   bankTransactions,
   accounts,
-  institutions,
   receiptTransactionMatches,
+  joinTransactionOwnership,
+  ownedByUser,
 } from "@workspace/db";
 import { gte, lte, and, sql, eq } from "drizzle-orm";
 
@@ -30,21 +31,17 @@ router.get("/summary", async (req, res) => {
     .innerJoin(scannedReceipts, eq(receiptTransactionMatches.receiptId, scannedReceipts.id))
     .where(eq(scannedReceipts.userId, userId));
 
-  const [totalTxnRow] = await db
+  const [totalTxnRow] = await joinTransactionOwnership(db
     .select({ count: sql<number>`count(*)::int` })
-    .from(bankTransactions)
-    .innerJoin(accounts, eq(bankTransactions.accountId, accounts.id))
-    .innerJoin(institutions, eq(accounts.institutionId, institutions.id))
-    .where(eq(institutions.userId, userId));
+    .from(bankTransactions).$dynamic())
+    .where(ownedByUser(userId));
 
-  const [spendRow] = await db
+  const [spendRow] = await joinTransactionOwnership(db
     .select({ total: sql<number>`coalesce(sum(${bankTransactions.amount}), 0)::float` })
-    .from(bankTransactions)
-    .innerJoin(accounts, eq(bankTransactions.accountId, accounts.id))
-    .innerJoin(institutions, eq(accounts.institutionId, institutions.id))
+    .from(bankTransactions).$dynamic())
     .where(
       and(
-        eq(institutions.userId, userId),
+        ownedByUser(userId),
         gte(bankTransactions.date, monthStart),
         lte(bankTransactions.date, today),
         eq(bankTransactions.pending, false),
@@ -107,7 +104,7 @@ router.get("/spending-over-time", async (req, res) => {
   const toDate = to ?? today;
 
   const conditions = [
-    eq(institutions.userId, userId),
+    ownedByUser(userId),
     sql`${bankTransactions.userCategory} IS NOT NULL`,
     sql`${bankTransactions.amount} > 0`,
     eq(bankTransactions.ignored, false),
@@ -124,15 +121,13 @@ router.get("/spending-over-time", async (req, res) => {
   }
 
   // Get daily spending per category
-  const rows = await db
+  const rows = await joinTransactionOwnership(db
     .select({
       date: bankTransactions.date,
       category: bankTransactions.userCategory,
       total: sql<number>`SUM(${bankTransactions.amount})`,
     })
-    .from(bankTransactions)
-    .innerJoin(accounts, eq(bankTransactions.accountId, accounts.id))
-    .innerJoin(institutions, eq(accounts.institutionId, institutions.id))
+    .from(bankTransactions).$dynamic())
     .where(and(...conditions))
     .groupBy(bankTransactions.date, bankTransactions.userCategory)
     .orderBy(bankTransactions.date);

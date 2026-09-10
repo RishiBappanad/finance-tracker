@@ -18,7 +18,7 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
 import { db } from "@workspace/db";
-import { bankTransactions, accounts, institutions } from "@workspace/db";
+import { bankTransactions, joinTransactionOwnership, ownedByUser } from "@workspace/db";
 import { eq, and, gte, lte } from "drizzle-orm";
 import { LogEventBody, GetEventsQueryParams, GetEventAggregationsQueryParams } from "@workspace/api-zod";
 import { getOrCreateManualAccountId } from "../lib/manual-account.js";
@@ -97,10 +97,10 @@ function transactionToEvent(t: TxnRow, userId: number): EventShape {
  * aggregation endpoint could silently disagree about what "an event"
  * is). */
 async function queryEvents(userId: number, start: string, end: string, source?: string | null): Promise<EventShape[]> {
-  const conditions = [eq(institutions.userId, userId), gte(bankTransactions.date, start), lte(bankTransactions.date, end)];
+  const conditions = [ownedByUser(userId), gte(bankTransactions.date, start), lte(bankTransactions.date, end)];
   if (source) conditions.push(eq(bankTransactions.source, source));
 
-  const rows = await db
+  const rows = await joinTransactionOwnership(db
     .select({
       id: bankTransactions.id,
       amount: bankTransactions.amount,
@@ -116,9 +116,7 @@ async function queryEvents(userId: number, start: string, end: string, source?: 
       sourceId: bankTransactions.sourceId,
       createdAt: bankTransactions.createdAt,
     })
-    .from(bankTransactions)
-    .innerJoin(accounts, eq(bankTransactions.accountId, accounts.id))
-    .innerJoin(institutions, eq(accounts.institutionId, institutions.id))
+    .from(bankTransactions).$dynamic())
     .where(and(...conditions))
     .orderBy(bankTransactions.date, bankTransactions.id);
 

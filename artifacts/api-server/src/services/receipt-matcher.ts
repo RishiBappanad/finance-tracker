@@ -17,10 +17,10 @@ import { db } from "@workspace/db";
 import {
   receiptTransactionMatches,
   bankTransactions,
-  accounts,
-  institutions,
+  joinTransactionOwnership,
+  ownedByUser,
 } from "@workspace/db";
-import { eq, and, sql } from "drizzle-orm";
+import { and, sql } from "drizzle-orm";
 import { reconcile, type ReceiptCandidate, type TransactionCandidate, type ReconcileOutcome } from "./reconciler.js";
 
 export interface ReceiptMatchResult {
@@ -47,7 +47,7 @@ async function getUnmatchedTransactionsForUser(userId: number): Promise<Transact
     .select({ id: receiptTransactionMatches.bankTransactionId })
     .from(receiptTransactionMatches);
 
-  const rows = await db
+  const rows = await joinTransactionOwnership(db
     .select({
       id: bankTransactions.id,
       amount: bankTransactions.amount,
@@ -55,12 +55,10 @@ async function getUnmatchedTransactionsForUser(userId: number): Promise<Transact
       merchantName: bankTransactions.merchantName,
       merchantNameRaw: bankTransactions.merchantNameRaw,
     })
-    .from(bankTransactions)
-    .innerJoin(accounts, eq(bankTransactions.accountId, accounts.id))
-    .innerJoin(institutions, eq(accounts.institutionId, institutions.id))
+    .from(bankTransactions).$dynamic())
     .where(
       and(
-        eq(institutions.userId, userId),
+        ownedByUser(userId),
         sql`${bankTransactions.id} NOT IN (${matchedTxnIds})`
       )
     );

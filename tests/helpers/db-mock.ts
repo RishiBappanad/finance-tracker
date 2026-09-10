@@ -11,7 +11,7 @@ const makeChain = () => {
   for (const m of [
     "from", "where", "leftJoin", "rightJoin", "innerJoin", "orderBy",
     "limit", "offset", "groupBy", "having", "values", "onConflictDoNothing",
-    "onConflictDoUpdate", "returning", "set", "execute",
+    "onConflictDoUpdate", "returning", "set", "execute", "$dynamic",
   ]) {
     c[m] = () => c;
   }
@@ -52,6 +52,25 @@ export const mockSchema = {
 };
 
 /**
+ * Mocks for lib/db/src/user-scoping.ts's real exports -- routes now import
+ * these from @workspace/db, so a mocked @workspace/db module needs its own
+ * stand-ins or every route that imports them gets `undefined` and throws.
+ * Like the rest of this mock, these ignore their real query-filtering
+ * behavior entirely (see this file's own top comment) -- joinTransactionOwnership
+ * just continues the chain via the mock's own no-op innerJoin, and
+ * ownedByUser returns an inert marker instead of a real SQL condition.
+ * Real filtering behavior is verified separately, against a live database,
+ * by tests/integration/user-scoping-live.test.ts.
+ */
+function joinTransactionOwnership(qb: any) {
+  return qb.innerJoin().innerJoin();
+}
+
+function ownedByUser(userId: number) {
+  return { __mockCondition: "ownedByUser", userId };
+}
+
+/**
  * Standard DB module mock for vi.mock("@workspace/db")
  */
 export function getDbMock() {
@@ -59,5 +78,7 @@ export function getDbMock() {
     db: mockDb,
     pool: {},
     ...mockSchema,
+    joinTransactionOwnership,
+    ownedByUser,
   };
 }

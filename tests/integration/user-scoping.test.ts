@@ -19,7 +19,7 @@ const { mockDb, enqueue, reset } = vi.hoisted(() => {
     for (const m of [
       "from", "where", "leftJoin", "rightJoin", "innerJoin", "orderBy",
       "limit", "offset", "groupBy", "having", "values", "onConflictDoNothing",
-      "onConflictDoUpdate", "returning", "set", "execute",
+      "onConflictDoUpdate", "returning", "set", "execute", "$dynamic",
     ]) {
       c[m] = () => c;
     }
@@ -55,6 +55,12 @@ vi.mock("@workspace/db", () => ({
   receiptItems: {},
   receiptTransactionMatches: {},
   userCategories: { userId: "user_id" },
+  // Mocks for lib/db/src/user-scoping.ts's real exports -- see
+  // tests/helpers/db-mock.ts's getDbMock() for the shared version of this
+  // same fix; this file predates that helper and keeps its own inline
+  // mock, so it needs the same two stand-ins directly.
+  joinTransactionOwnership: (qb: any) => qb.innerJoin().innerJoin(),
+  ownedByUser: (userId: number) => ({ __mockCondition: "ownedByUser", userId }),
 }));
 
 import app from "../../artifacts/api-server/src/app.js";
