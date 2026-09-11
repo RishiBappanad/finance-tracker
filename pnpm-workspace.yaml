@@ -37,4 +37,4 @@ allowBuilds:
   esbuild: false
 
 minimumReleaseAgeExclude:
-  - trackstack-ui@0.1.0
+  - trackstack-ui@0.1.0 || 0.2.0

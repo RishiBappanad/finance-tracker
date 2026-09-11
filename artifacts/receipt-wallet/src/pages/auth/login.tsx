@@ -6,8 +6,6 @@ import { Input } from "@/components/ui/input";
 import { Wallet, Loader2 } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 
-const TRACKSTACK_AUTH_URL = import.meta.env.VITE_TRACKSTACK_AUTH_URL ?? "";
-
 function GoogleIcon() {
   return (
     <svg className="h-4 w-4" viewBox="0 0 24 24">
@@ -25,7 +23,7 @@ export default function Login() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const { login } = useAuth();
+  const { login, loginWithGoogle } = useAuth();
   const [, setLocation] = useLocation();
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -44,12 +42,9 @@ export default function Login() {
 
   const handleGoogleLogin = async () => {
     try {
-      const returnTo = window.location.origin;
-      const res = await fetch(`${TRACKSTACK_AUTH_URL}/google?returnTo=${encodeURIComponent(returnTo)}`);
-      const data = await res.json();
-      if (data.url) window.location.href = data.url;
-    } catch {
-      setError("Google login unavailable");
+      await loginWithGoogle(window.location.origin);
+    } catch (err: any) {
+      setError(err.message || "Google login unavailable");
     }
   };
 

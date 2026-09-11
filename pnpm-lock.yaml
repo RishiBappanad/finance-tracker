@@ -178,8 +178,8 @@ importers:
         specifier: ^4.1.1
         version: 4.1.1(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
       trackstack-ui:
-        specifier: ^0.1.0
-        version: 0.1.0(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
+        specifier: ^0.2.0
+        version: 0.2.0(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
     devDependencies:
       '@hookform/resolvers':
         specifier: ^3.10.0
@@ -3766,8 +3766,8 @@ packages:
     resolution: {integrity: sha512-o5sSPKEkg/DIQNmH43V0/uerLrpzVedkUh8tGNvaeXpfpuwjKenlSox/2O/BTlZUtEe+JG7s5YhEz608PlAHRA==}
     engines: {node: '>=0.6'}
 
-  trackstack-ui@0.1.0:
-    resolution: {integrity: sha512-AXczsQ4mBsPq5WNhFnuboxaeDE5SbZoSiygCLHip+YyML/9fyP2e+Vqx8HMaZyYAEmwMU7pSV9qV7XSCPaCgwQ==}
+  trackstack-ui@0.2.0:
+    resolution: {integrity: sha512-UdIg6+FJLy5tK9kBY/6zlbyNnWZPuE0PmBYYcb7Pl+cLuBZirqtnCNnp98ju0pGWKJJt7r3NUyaYk/HKWuv/Sg==}
     peerDependencies:
       react: '>=18.0.0'
       react-dom: '>=18.0.0'
@@ -7139,7 +7139,7 @@ snapshots:
 
   toidentifier@1.0.1: {}
 
-  trackstack-ui@0.1.0(react-dom@19.1.0(react@19.1.0))(react@19.1.0):
+  trackstack-ui@0.2.0(react-dom@19.1.0(react@19.1.0))(react@19.1.0):
     dependencies:
       clsx: 2.1.1
       lucide-react: 0.468.0(react@19.1.0)
