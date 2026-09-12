@@ -16,7 +16,13 @@ env:
   REGION: us-east1
   SERVICE: trackstack-finance
   IMAGE: us-east1-docker.pkg.dev/trackstack-501915/cloud-run-source-deploy/trackstack-finance:latest
-  TRACKSTACK_AUTH_URL: https://trackstack-auth-824912246889.us-east1.run.app
+  # Gateway cutover (2026-09-12): this service is now only meant to be
+  # reached through trackstack-gateway at /finance -- same reasoning as
+  # nutrition-insights' own deploy.yml. Backend/API unaffected (already
+  # calls its own routes as same-origin /api/... paths).
+  BASE_PATH: /finance/
+  API_BASE: /finance
+  TRACKSTACK_AUTH_URL: /auth
 
 jobs:
   deploy:
@@ -45,6 +51,8 @@ jobs:
         # for the full diagnosis.
         run: |
           docker build \
+            --build-arg "BASE_PATH=${{ env.BASE_PATH }}" \
+            --build-arg "API_BASE=${{ env.API_BASE }}" \
             --build-arg "TRACKSTACK_AUTH_URL=${{ env.TRACKSTACK_AUTH_URL }}" \
             -t "${{ env.IMAGE }}" .
 
