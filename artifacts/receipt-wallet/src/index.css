@@ -66,6 +66,14 @@
   --color-switcher-foreground: hsl(var(--sidebar-foreground));
   --color-switcher-border: hsl(var(--sidebar-border));
   --color-switcher-active: hsl(var(--sidebar-accent));
+  /* sidebar-accent-foreground was already correctly designed to
+     contrast against sidebar-accent -- switcher-active-foreground needs
+     exactly that same pairing, not primary-foreground (a real, live bug
+     fixed 2026-09-12: dark theme's primary-foreground sits near-black to
+     pair with a light `primary` button, which happens to be nearly as
+     dark as sidebar-accent too, making the active switcher icon
+     effectively invisible on finance-tracker's own page). */
+  --color-switcher-active-foreground: hsl(var(--sidebar-accent-foreground));
 
   --font-sans: var(--app-font-sans);
   --font-serif: var(--app-font-serif);
