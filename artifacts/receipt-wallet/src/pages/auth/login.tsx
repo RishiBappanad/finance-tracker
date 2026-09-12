@@ -42,7 +42,10 @@ export default function Login() {
 
   const handleGoogleLogin = async () => {
     try {
-      await loginWithGoogle(window.location.origin);
+      // origin alone loses this app's own /finance path now that the
+      // gateway puts every tracker on one shared origin -- see
+      // nutrition-insights' matching fix for the full explanation.
+      await loginWithGoogle(window.location.origin + window.location.pathname);
     } catch (err: any) {
       setError(err.message || "Google login unavailable");
     }
