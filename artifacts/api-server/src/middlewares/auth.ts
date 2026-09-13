@@ -46,6 +46,32 @@ export function verifyToken(token: string): AuthPayload {
   return { userId: decoded.accountId, email: decoded.email };
 }
 
+// trackstack-auth is the only place personal-access-token storage/lookup
+// lives -- a token this service's own JWT verification doesn't recognize
+// is checked against trackstack-auth's POST /tokens/verify instead,
+// mirroring todo-tracker's requireAuth (the first tracker to actually
+// implement this). Despite ACTIONS_CONTRACT_SPEC.md documenting PATs as
+// working "everywhere requireAuth is used," this service never actually
+// had the fallback -- confirmed live: a real PAT returned 401 here while
+// working fine against todo-tracker.
+const TRACKSTACK_AUTH_URL = process.env.TRACKSTACK_AUTH_URL;
+
+async function verifyPersonalAccessToken(token: string): Promise<AuthPayload | null> {
+  if (!TRACKSTACK_AUTH_URL) return null;
+  try {
+    const res = await fetch(`${TRACKSTACK_AUTH_URL}/tokens/verify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { account: { accountId: number; email: string } };
+    return { userId: data.account.accountId, email: data.account.email };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Ensure a local mirror row exists for this account. finance-tracker's own
  * tables (institutions, scanned_receipts, user_categories) still have a
@@ -62,10 +88,11 @@ async function ensureLocalUser(payload: AuthPayload): Promise<void> {
 
 /**
  * Auth middleware — extracts and validates a trackstack-auth JWT from the
- * Authorization header. Attaches user to req.user. Returns 401 if
+ * Authorization header, falling back to a personal access token if it
+ * isn't a valid JWT. Attaches user to req.user. Returns 401 if
  * missing/invalid.
  */
-export function requireAuth(req: Request, res: Response, next: NextFunction): void {
+export async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
   const header = req.headers.authorization;
   if (!header || !header.startsWith("Bearer ")) {
     res.status(401).json({ error: "Authentication required" });
@@ -73,13 +100,21 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
   }
 
   const token = header.slice(7);
+  let user: AuthPayload | null = null;
   try {
-    req.user = verifyToken(token);
+    user = verifyToken(token);
   } catch {
+    // Not a valid JWT -- fall through and try it as a PAT below.
+  }
+  if (!user) {
+    user = await verifyPersonalAccessToken(token);
+  }
+  if (!user) {
     res.status(401).json({ error: "Invalid or expired token" });
     return;
   }
 
+  req.user = user;
   ensureLocalUser(req.user)
     .then(() => next())
     .catch(next);
