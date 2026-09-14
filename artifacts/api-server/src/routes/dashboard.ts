@@ -8,7 +8,7 @@ import {
   joinTransactionOwnership,
   ownedByUser,
 } from "@workspace/db";
-import { gte, lte, and, sql, eq } from "drizzle-orm";
+import { gte, lte, and, sql, eq, inArray } from "drizzle-orm";
 
 const router = Router();
 
@@ -112,11 +112,14 @@ router.get("/spending-over-time", async (req, res) => {
     lte(bankTransactions.date, toDate),
   ];
 
-  // Filter by account names if provided
+  // Filter by account names if provided. inArray() binds accountNames as
+  // real parameters -- accountFilter is request-controlled (req.query.accounts),
+  // so it must never be spliced into raw SQL text (the previous version's
+  // manual quote-escaping + sql.raw() was exactly that anti-pattern).
   if (accountFilter) {
     const accountNames = accountFilter.split(",").map((a) => a.trim()).filter(Boolean);
     if (accountNames.length > 0) {
-      conditions.push(sql`${accounts.name} IN (${sql.raw(accountNames.map((a) => `'${a.replace(/'/g, "''")}'`).join(","))})`);
+      conditions.push(inArray(accounts.name, accountNames));
     }
   }
 

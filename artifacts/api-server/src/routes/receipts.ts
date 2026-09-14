@@ -4,7 +4,7 @@ import path from "path";
 import { mkdirSync } from "fs";
 import { db } from "@workspace/db";
 import { scannedReceipts, receiptItems, receiptTransactionMatches, bankTransactions } from "@workspace/db";
-import { eq, and, gte, lte, like, sql } from "drizzle-orm";
+import { eq, and, gte, lte, like, sql, inArray } from "drizzle-orm";
 import {
   CreateReceiptBody,
   UpdateReceiptBody,
@@ -73,7 +73,7 @@ async function getMatchMap(receiptIds: number[]) {
   const matchRows = await db
     .select({ receiptId: receiptTransactionMatches.receiptId, id: receiptTransactionMatches.id })
     .from(receiptTransactionMatches)
-    .where(sql`${receiptTransactionMatches.receiptId} = ANY(${sql.raw(`ARRAY[${receiptIds.join(",")}]::int[]`)})`)
+    .where(inArray(receiptTransactionMatches.receiptId, receiptIds))
   return new Map(matchRows.map((m) => [m.receiptId, m.id]));
 }
 
