@@ -1,5 +1,5 @@
 import { type Request, type Response, type NextFunction } from "express";
-import jwt from "jsonwebtoken";
+import { createRequireAuth, type VerifiedAccount } from "trackstack-ui/auth-client";
 import { db, users } from "@workspace/db";
 
 // Was `process.env.JWT_SECRET || "dev-secret-change-in-production"` -- a
@@ -15,6 +15,7 @@ if (!process.env.JWT_SECRET) {
   throw new Error("JWT_SECRET environment variable is required but was not provided.");
 }
 const JWT_SECRET = process.env.JWT_SECRET;
+const TRACKSTACK_AUTH_URL = process.env.TRACKSTACK_AUTH_URL;
 
 // Tokens are issued by trackstack-auth, not this service. Its claim shape is
 // { accountId, email }. We keep the field name `userId` here (rather than
@@ -27,48 +28,12 @@ export interface AuthPayload {
   email: string;
 }
 
-interface TrackstackAuthClaims {
-  accountId: number;
-  email: string;
-}
-
 // Extend Express Request to include user
 declare global {
   namespace Express {
     interface Request {
       user?: AuthPayload;
     }
-  }
-}
-
-export function verifyToken(token: string): AuthPayload {
-  const decoded = jwt.verify(token, JWT_SECRET) as TrackstackAuthClaims;
-  return { userId: decoded.accountId, email: decoded.email };
-}
-
-// trackstack-auth is the only place personal-access-token storage/lookup
-// lives -- a token this service's own JWT verification doesn't recognize
-// is checked against trackstack-auth's POST /tokens/verify instead,
-// mirroring todo-tracker's requireAuth (the first tracker to actually
-// implement this). Despite ACTIONS_CONTRACT_SPEC.md documenting PATs as
-// working "everywhere requireAuth is used," this service never actually
-// had the fallback -- confirmed live: a real PAT returned 401 here while
-// working fine against todo-tracker.
-const TRACKSTACK_AUTH_URL = process.env.TRACKSTACK_AUTH_URL;
-
-async function verifyPersonalAccessToken(token: string): Promise<AuthPayload | null> {
-  if (!TRACKSTACK_AUTH_URL) return null;
-  try {
-    const res = await fetch(`${TRACKSTACK_AUTH_URL}/tokens/verify`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token }),
-    });
-    if (!res.ok) return null;
-    const data = (await res.json()) as { account: { accountId: number; email: string } };
-    return { userId: data.account.accountId, email: data.account.email };
-  } catch {
-    return null;
   }
 }
 
@@ -86,36 +51,34 @@ async function ensureLocalUser(payload: AuthPayload): Promise<void> {
     .onConflictDoNothing({ target: users.id });
 }
 
-/**
- * Auth middleware — extracts and validates a trackstack-auth JWT from the
- * Authorization header, falling back to a personal access token if it
- * isn't a valid JWT. Attaches user to req.user. Returns 401 if
- * missing/invalid.
- */
+// JWT-then-personal-access-token verification is now the shared,
+// contract-tested trackstack-ui/auth-client package (this service's own
+// hand-copy of it was found to be silently missing the PAT fallback
+// entirely, despite ACTIONS_CONTRACT_SPEC.md documenting it as working
+// everywhere requireAuth is used -- see that fix's commit for the full
+// story). This wrapper only adapts its {accountId, email} shape to this
+// service's existing {userId, email} AuthPayload and runs ensureLocalUser
+// as part of authenticating, so no route handler needs to change.
+const innerRequireAuth = createRequireAuth({
+  jwtSecret: JWT_SECRET,
+  trackstackAuthUrl: TRACKSTACK_AUTH_URL,
+  onAuthenticated: async (account: VerifiedAccount) => {
+    await ensureLocalUser({ userId: account.accountId, email: account.email });
+  },
+});
+
 export async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
-  const header = req.headers.authorization;
-  if (!header || !header.startsWith("Bearer ")) {
-    res.status(401).json({ error: "Authentication required" });
-    return;
-  }
-
-  const token = header.slice(7);
-  let user: AuthPayload | null = null;
-  try {
-    user = verifyToken(token);
-  } catch {
-    // Not a valid JWT -- fall through and try it as a PAT below.
-  }
-  if (!user) {
-    user = await verifyPersonalAccessToken(token);
-  }
-  if (!user) {
-    res.status(401).json({ error: "Invalid or expired token" });
-    return;
-  }
-
-  req.user = user;
-  ensureLocalUser(req.user)
-    .then(() => next())
-    .catch(next);
+  // innerRequireAuth calls this callback as either next() (success) or
+  // next(err) (an onAuthenticated failure) -- must check for err before
+  // treating it as success, or a real downstream error gets silently
+  // swallowed and the request proceeds as if authenticated.
+  await innerRequireAuth(req, res, (err?: unknown) => {
+    if (err) {
+      next(err);
+      return;
+    }
+    const account = (req as Request & { account?: VerifiedAccount }).account!;
+    req.user = { userId: account.accountId, email: account.email };
+    next();
+  });
 }
