@@ -165,6 +165,7 @@ describe("GET /events cross-user isolation and shape", () => {
       source_id: plaidTxnA,
       hidden: false,
       status: null,
+      label: "Events Live Coffee A",
     });
     expect(event.metadata.merchantName).toBe("Events Live Coffee A");
     expect(event.metadata.pending).toBe(false);

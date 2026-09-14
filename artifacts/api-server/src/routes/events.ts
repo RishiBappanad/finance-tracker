@@ -39,6 +39,7 @@ interface EventShape {
   hidden: boolean;
   status: string | null;
   metadata: Record<string, unknown>;
+  label: string | null;
 }
 
 type TxnRow = {
@@ -87,6 +88,11 @@ function transactionToEvent(t: TxnRow, userId: number): EventShape {
       currency: t.currency,
       pending: t.pending,
     },
+    // The Core Shape's `label` field (added 2026-09-14) -- a merchant
+    // name is the obvious one-line label for a transaction; falls back
+    // to the raw (unnormalized) name Plaid sent if the cleaned-up one
+    // isn't set, and to null (not a fabricated placeholder) if neither is.
+    label: t.merchantName ?? t.merchantNameRaw ?? null,
   };
 }
 
