@@ -71,6 +71,17 @@ function ownedByUser(userId: number) {
 }
 
 /**
+ * Mock for lib/db/src/domain-events.ts's logDomainEvent() -- same reasoning
+ * as joinTransactionOwnership/ownedByUser above: routes call this as a
+ * fire-and-forget side effect (no route branches on its return value), so a
+ * no-op stand-in is sufficient and, critically, does NOT touch the mock
+ * queue -- the real implementation calls db.insert(domainEvents) internally,
+ * which would silently consume a queue slot meant for the route's own next
+ * real query if this mock just delegated to mockDb instead of no-opping.
+ */
+async function logDomainEvent(): Promise<void> {}
+
+/**
  * Standard DB module mock for vi.mock("@workspace/db")
  */
 export function getDbMock() {
@@ -80,5 +91,6 @@ export function getDbMock() {
     ...mockSchema,
     joinTransactionOwnership,
     ownedByUser,
+    logDomainEvent,
   };
 }

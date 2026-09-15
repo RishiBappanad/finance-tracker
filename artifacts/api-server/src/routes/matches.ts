@@ -6,6 +6,7 @@ import {
   bankTransactions,
   joinTransactionOwnership,
   ownedByUser,
+  logDomainEvent,
 } from "@workspace/db";
 import { eq, and, isNull, sql } from "drizzle-orm";
 import { CreateMatchBody, UpdateMatchBody, ListMatchesQueryParams } from "@workspace/api-zod";
@@ -112,7 +113,14 @@ router.post("/run", async (req, res) => {
         })
         .onConflictDoNothing()
         .returning();
-      if (match) createdMatches.push(match);
+      if (match) {
+        createdMatches.push(match);
+        await logDomainEvent(db, {
+          userId, ownerType: "receipt_transaction_match", ownerId: String(match.id), action: "created",
+          amount: match.confidenceScore ?? 0, source: "auto",
+          metadata: { receiptId: match.receiptId, bankTransactionId: match.bankTransactionId },
+        });
+      }
       autoMatched++;
       // Remove from candidate pool so it can't double-match
       const idx = txnCandidates.findIndex((t) => t.id === outcome.best!.transaction.id);
@@ -204,6 +212,11 @@ router.post("/", async (req, res) => {
     .values({ ...parsed.data, matchMethod: "manual", confirmed: true, confirmedAt: new Date() })
     .returning();
 
+  await logDomainEvent(db, {
+    userId, ownerType: "receipt_transaction_match", ownerId: String(match.id), action: "created",
+    source: "manual", metadata: { receiptId: match.receiptId, bankTransactionId: match.bankTransactionId },
+  });
+
   res.status(201).json(serializeMatch(match));
 });
 
@@ -231,6 +244,12 @@ router.patch("/:matchId", async (req, res) => {
     .returning();
 
   if (!row) return void res.status(404).json({ error: "Match not found" });
+
+  await logDomainEvent(db, {
+    userId: req.user!.userId, ownerType: "receipt_transaction_match", ownerId: String(row.id), action: "updated",
+    metadata: { receiptId: row.receiptId, bankTransactionId: row.bankTransactionId, confirmed: row.confirmed },
+  });
+
   res.json(serializeMatch(row));
 });
 
@@ -242,9 +261,18 @@ router.delete("/:matchId", async (req, res) => {
     return void res.status(404).json({ error: "Match not found" });
   }
 
-  await db
+  const [deleted] = await db
     .delete(receiptTransactionMatches)
-    .where(eq(receiptTransactionMatches.id, matchId));
+    .where(eq(receiptTransactionMatches.id, matchId))
+    .returning();
+
+  if (deleted) {
+    await logDomainEvent(db, {
+      userId: req.user!.userId, ownerType: "receipt_transaction_match", ownerId: String(deleted.id), action: "deleted",
+      metadata: { receiptId: deleted.receiptId, bankTransactionId: deleted.bankTransactionId },
+    });
+  }
+
   res.status(204).send();
 });
 

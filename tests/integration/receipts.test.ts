@@ -62,6 +62,14 @@ vi.mock("@workspace/db", () => ({
   // mock, so it needs the same two stand-ins directly.
   joinTransactionOwnership: (qb: any) => qb.innerJoin().innerJoin(),
   ownedByUser: (userId: number) => ({ __mockCondition: "ownedByUser", userId }),
+  // Mock for lib/db/src/domain-events.ts's logDomainEvent() -- a no-op
+  // stand-in for the same reason as the two above: it's a fire-and-forget
+  // side effect no route branches on, and it must NOT touch the mock
+  // queue (the real implementation's own db.insert(domainEvents) call
+  // would otherwise silently consume a slot meant for the route's next
+  // real query). See tests/helpers/db-mock.ts's getDbMock() for the
+  // shared version of this same fix.
+  logDomainEvent: async () => {},
 }));
 
 import app from "../../artifacts/api-server/src/app.js";

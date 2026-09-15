@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
-import { userCategories } from "@workspace/db";
-import { eq, and } from "drizzle-orm";
+import { userCategories, logDomainEvent } from "@workspace/db";
+import { eq, and, sql } from "drizzle-orm";
 import { isValidCategoryName } from "../lib/categories.js";
 
 const router = Router();
@@ -40,6 +40,11 @@ router.post("/", async (req, res) => {
       .insert(userCategories)
       .values({ userId: req.user!.userId, name: trimmedName, color: color || null, icon: icon || null })
       .returning();
+
+    await logDomainEvent(db, {
+      userId: req.user!.userId, ownerType: "user_category", ownerId: String(row.id), action: "created",
+      label: row.name, metadata: { color: row.color, icon: row.icon },
+    });
 
     res.status(201).json({
       id: row.id,
@@ -91,7 +96,20 @@ router.put("/color", async (req, res) => {
       target: [userCategories.userId, userCategories.name],
       set: { color },
     })
-    .returning();
+    .returning({
+      id: userCategories.id, name: userCategories.name, color: userCategories.color,
+      icon: userCategories.icon, createdAt: userCategories.createdAt,
+      // (xmax = 0) is Postgres's own "was this row just inserted, not
+      // updated" tell -- same trick todo-tracker's upsertTodoBySource
+      // already uses to know which branch of an ON CONFLICT fired.
+      inserted: sql<boolean>`(xmax = 0)`,
+    });
+
+  await logDomainEvent(db, {
+    userId: req.user!.userId, ownerType: "user_category", ownerId: String(row.id),
+    action: row.inserted ? "created" : "updated",
+    label: row.name, metadata: { color: row.color, icon: row.icon },
+  });
 
   res.json({
     id: row.id,
@@ -105,9 +123,17 @@ router.put("/color", async (req, res) => {
 // DELETE /categories/:id — delete a user category
 router.delete("/:id", async (req, res) => {
   const id = Number(req.params.id);
-  await db.delete(userCategories).where(
+  const [deleted] = await db.delete(userCategories).where(
     and(eq(userCategories.id, id), eq(userCategories.userId, req.user!.userId))
-  );
+  ).returning();
+
+  if (deleted) {
+    await logDomainEvent(db, {
+      userId: req.user!.userId, ownerType: "user_category", ownerId: String(deleted.id), action: "deleted",
+      label: deleted.name, metadata: { color: deleted.color, icon: deleted.icon },
+    });
+  }
+
   res.status(204).send();
 });
 

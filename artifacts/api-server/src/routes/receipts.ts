@@ -3,7 +3,7 @@ import multer from "multer";
 import path from "path";
 import { mkdirSync } from "fs";
 import { db } from "@workspace/db";
-import { scannedReceipts, receiptItems, receiptTransactionMatches, bankTransactions } from "@workspace/db";
+import { scannedReceipts, receiptItems, receiptTransactionMatches, bankTransactions, logDomainEvent } from "@workspace/db";
 import { eq, and, gte, lte, like, sql, inArray } from "drizzle-orm";
 import {
   CreateReceiptBody,
@@ -167,6 +167,12 @@ router.post("/upload", upload.single("file"), async (req, res) => {
     })
     .returning();
 
+  await logDomainEvent(db, {
+    userId: req.user!.userId, ownerType: "receipt", ownerId: String(row.id), action: "created",
+    label: row.storeName, amount: row.total ?? 0, source: "manual",
+    occurredAt: row.purchaseDate ? new Date(row.purchaseDate) : undefined,
+  });
+
   res.status(201).json(serializeReceipt(row));
 });
 
@@ -273,6 +279,13 @@ router.post("/confirm", async (req, res) => {
     }
   }
 
+  await logDomainEvent(db, {
+    userId: req.user!.userId, ownerType: "receipt", ownerId: String(receipt.id), action: "created",
+    label: receipt.storeName, amount: receipt.total ?? 0, source: "gemini",
+    metadata: { itemCount: Array.isArray(items) ? items.length : 0 },
+    occurredAt: receipt.purchaseDate ? new Date(receipt.purchaseDate) : undefined,
+  });
+
   // Immediately try to match this receipt against the user's own unmatched
   // bank transactions — previously the only way a receipt got matched was a
   // separate manual trip to the Reconcile page (or its bulk "run" button),
@@ -329,6 +342,13 @@ router.post("/", async (req, res) => {
       processingStatus: "pending",
     })
     .returning();
+
+  await logDomainEvent(db, {
+    userId: req.user!.userId, ownerType: "receipt", ownerId: String(row.id), action: "created",
+    label: row.storeName, amount: row.total ?? 0, source: ocrEngine,
+    sourceId: sourceFileHash ?? null,
+    occurredAt: row.purchaseDate ? new Date(row.purchaseDate) : undefined,
+  });
 
   res.status(201).json(serializeReceipt(row));
 });
@@ -448,6 +468,12 @@ router.patch("/:receiptId", async (req, res) => {
     .where(and(eq(scannedReceipts.id, id), eq(scannedReceipts.userId, req.user!.userId))).returning();
   if (!row) return void res.status(404).json({ error: "Receipt not found" });
 
+  await logDomainEvent(db, {
+    userId: req.user!.userId, ownerType: "receipt", ownerId: String(row.id), action: "updated",
+    label: row.storeName, amount: row.total ?? 0,
+    occurredAt: row.purchaseDate ? new Date(row.purchaseDate) : undefined,
+  });
+
   const match = await db
     .select({ id: receiptTransactionMatches.id })
     .from(receiptTransactionMatches)
@@ -460,8 +486,18 @@ router.patch("/:receiptId", async (req, res) => {
 // SECURITY FIX (2026-08-27): no ownership check -- any authenticated user
 // could DELETE any other user's receipt by guessing receiptId.
 router.delete("/:receiptId", async (req, res) => {
-  await db.delete(scannedReceipts)
-    .where(and(eq(scannedReceipts.id, Number(req.params.receiptId)), eq(scannedReceipts.userId, req.user!.userId)));
+  const [deleted] = await db.delete(scannedReceipts)
+    .where(and(eq(scannedReceipts.id, Number(req.params.receiptId)), eq(scannedReceipts.userId, req.user!.userId)))
+    .returning();
+
+  if (deleted) {
+    await logDomainEvent(db, {
+      userId: req.user!.userId, ownerType: "receipt", ownerId: String(deleted.id), action: "deleted",
+      label: deleted.storeName, amount: deleted.total ?? 0,
+      occurredAt: deleted.purchaseDate ? new Date(deleted.purchaseDate) : undefined,
+    });
+  }
+
   res.status(204).send();
 });
 
@@ -506,6 +542,12 @@ router.post("/:receiptId/items", async (req, res) => {
     .values({ receiptId, ...parsed.data })
     .returning();
 
+  await logDomainEvent(db, {
+    userId: req.user!.userId, ownerType: "receipt_item", ownerId: String(item.id), action: "created",
+    label: item.description, amount: item.lineTotal, category: item.category,
+    metadata: { receiptId, quantity: item.quantity, unitPrice: item.unitPrice },
+  });
+
   res.status(201).json(item);
 });
 
@@ -543,6 +585,13 @@ router.patch("/:receiptId/items/:itemId", async (req, res) => {
     .returning();
 
   if (!item) return void res.status(404).json({ error: "Item not found" });
+
+  await logDomainEvent(db, {
+    userId: req.user!.userId, ownerType: "receipt_item", ownerId: String(item.id), action: "updated",
+    label: item.description, amount: item.lineTotal, category: item.category,
+    metadata: { receiptId: Number(req.params.receiptId), quantity: item.quantity, unitPrice: item.unitPrice },
+  });
+
   res.json(item);
 });
 

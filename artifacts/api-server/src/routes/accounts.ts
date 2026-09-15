@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
-import { accounts, institutions } from "@workspace/db";
+import { accounts, institutions, logDomainEvent } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { CreateAccountBody } from "@workspace/api-zod";
 import { getPlaidAdapter } from "../services/plaid.js";
@@ -100,7 +100,7 @@ router.post("/", async (req, res) => {
   }
 
   for (const acct of rawAccounts) {
-    await db
+    const [inserted] = await db
       .insert(accounts)
       .values({
         id: acct.accountId,
@@ -111,7 +111,19 @@ router.post("/", async (req, res) => {
         mask: acct.mask,
         currency: acct.currency,
       })
-      .onConflictDoNothing();
+      .onConflictDoNothing()
+      .returning();
+
+    // onConflictDoNothing() returns no row when the account already
+    // existed -- only a genuinely new account is a "created" event, not
+    // a re-link of one already on file.
+    if (inserted) {
+      await logDomainEvent(db, {
+        userId: req.user!.userId, ownerType: "account", ownerId: inserted.id, action: "created",
+        label: inserted.name, source: "plaid", sourceId: inserted.id,
+        metadata: { institutionId, type: inserted.type, subtype: inserted.subtype },
+      });
+    }
   }
 
   const first = rawAccounts[0];
@@ -166,7 +178,7 @@ router.get("/:accountId", async (req, res) => {
 // first (same join as GET /:accountId above) before deleting.
 router.delete("/:accountId", async (req, res) => {
   const owned = await db
-    .select({ id: accounts.id })
+    .select({ id: accounts.id, name: accounts.name, type: accounts.type, subtype: accounts.subtype })
     .from(accounts)
     .innerJoin(institutions, eq(accounts.institutionId, institutions.id))
     .where(and(eq(accounts.id, req.params.accountId), eq(institutions.userId, req.user!.userId)))
@@ -175,6 +187,14 @@ router.delete("/:accountId", async (req, res) => {
   if (!owned.length) return void res.status(404).json({ error: "Account not found" });
 
   await db.delete(accounts).where(eq(accounts.id, req.params.accountId));
+
+  const account = owned[0]!;
+  await logDomainEvent(db, {
+    userId: req.user!.userId, ownerType: "account", ownerId: account.id, action: "deleted",
+    label: account.name, source: "plaid", sourceId: account.id,
+    metadata: { type: account.type, subtype: account.subtype },
+  });
+
   res.status(204).send();
 });
 
