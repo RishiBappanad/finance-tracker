@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
-import { bankTransactions, accounts, institutions, receiptTransactionMatches, joinTransactionOwnership, ownedByUser } from "@workspace/db";
+import { bankTransactions, accounts, institutions, receiptTransactionMatches, joinTransactionOwnership, ownedByUser, logDomainEvent } from "@workspace/db";
 import { eq, and, gte, lte, like, sql, isNull, inArray } from "drizzle-orm";
 import { ListTransactionsQueryParams } from "@workspace/api-zod";
 import { getPlaidAdapter } from "../services/plaid.js";
@@ -177,7 +177,7 @@ router.post("/sync", async (req, res) => {
         const result = await plaid.syncTransactions(institution.plaidAccessToken, cursor);
 
         for (const t of result.added) {
-          await db
+          const [inserted] = await db
             .insert(bankTransactions)
             .values({
               id: t.transactionId,
@@ -202,12 +202,22 @@ router.post("/sync", async (req, res) => {
               source: "plaid",
               sourceId: t.transactionId,
             })
-            .onConflictDoNothing();
+            .onConflictDoNothing()
+            .returning();
+          if (inserted) {
+            await logDomainEvent(db, {
+              userId: req.user!.userId, ownerType: "transaction", ownerId: inserted.id, action: "created",
+              category: inserted.categoryPrimary, amount: inserted.amount,
+              label: inserted.merchantName ?? inserted.merchantNameRaw, source: "plaid", sourceId: inserted.id,
+              metadata: { merchantNameRaw: inserted.merchantNameRaw, currency: inserted.currency, pending: inserted.pending, ignored: false },
+              occurredAt: new Date(inserted.date),
+            });
+          }
           totalAdded++;
         }
 
         for (const t of result.modified) {
-          await db
+          const [updated] = await db
             .update(bankTransactions)
             .set({
               amount: t.amount,
@@ -218,12 +228,31 @@ router.post("/sync", async (req, res) => {
               date: t.date,
               pending: t.pending,
             })
-            .where(eq(bankTransactions.id, t.transactionId));
+            .where(eq(bankTransactions.id, t.transactionId))
+            .returning();
+          if (updated) {
+            await logDomainEvent(db, {
+              userId: req.user!.userId, ownerType: "transaction", ownerId: updated.id, action: "updated",
+              category: updated.userCategory ?? updated.categoryPrimary, amount: updated.amount,
+              label: updated.merchantName ?? updated.merchantNameRaw, source: updated.source, sourceId: updated.sourceId,
+              metadata: { merchantNameRaw: updated.merchantNameRaw, currency: updated.currency, pending: updated.pending, ignored: updated.ignored, reason: "plaid_sync" },
+              occurredAt: new Date(updated.date),
+            });
+          }
           totalModified++;
         }
 
         for (const id of result.removed) {
-          await db.delete(bankTransactions).where(eq(bankTransactions.id, id));
+          const [deleted] = await db.delete(bankTransactions).where(eq(bankTransactions.id, id)).returning();
+          if (deleted) {
+            await logDomainEvent(db, {
+              userId: req.user!.userId, ownerType: "transaction", ownerId: deleted.id, action: "deleted",
+              category: deleted.userCategory ?? deleted.categoryPrimary, amount: deleted.amount,
+              label: deleted.merchantName ?? deleted.merchantNameRaw, source: deleted.source, sourceId: deleted.sourceId,
+              metadata: { reason: "plaid_sync" },
+              occurredAt: new Date(deleted.date),
+            });
+          }
           totalRemoved++;
         }
 
@@ -335,7 +364,17 @@ router.post("/bulk-categorize", async (req, res) => {
     .update(bankTransactions)
     .set({ userCategory })
     .where(inArray(bankTransactions.id, ids))
-    .returning({ id: bankTransactions.id });
+    .returning();
+
+  for (const row of updated) {
+    await logDomainEvent(db, {
+      userId, ownerType: "transaction", ownerId: row.id, action: "updated",
+      category: row.userCategory ?? row.categoryPrimary, amount: row.amount,
+      label: row.merchantName ?? row.merchantNameRaw, source: row.source, sourceId: row.sourceId,
+      metadata: { merchantNameRaw: row.merchantNameRaw, currency: row.currency, pending: row.pending, ignored: row.ignored, reason: "bulk_categorize" },
+      occurredAt: new Date(row.date),
+    });
+  }
 
   res.json({ updated: updated.length, merchantName, userCategory });
 });
@@ -378,10 +417,20 @@ router.post("/categorize", async (req, res) => {
   let categorized = 0;
   const breakdown: Record<string, number> = {};
   for (const result of results) {
-    await db
+    const [row] = await db
       .update(bankTransactions)
       .set({ userCategory: result.category })
-      .where(eq(bankTransactions.id, result.id));
+      .where(eq(bankTransactions.id, result.id))
+      .returning();
+    if (row) {
+      await logDomainEvent(db, {
+        userId, ownerType: "transaction", ownerId: row.id, action: "updated",
+        category: row.userCategory ?? row.categoryPrimary, amount: row.amount,
+        label: row.merchantName ?? row.merchantNameRaw, source: row.source, sourceId: row.sourceId,
+        metadata: { merchantNameRaw: row.merchantNameRaw, currency: row.currency, pending: row.pending, ignored: row.ignored, reason: "ai_categorize" },
+        occurredAt: new Date(row.date),
+      });
+    }
     categorized++;
     breakdown[result.category] = (breakdown[result.category] ?? 0) + 1;
   }
@@ -452,6 +501,14 @@ router.patch("/:transactionId", async (req, res) => {
     .returning();
 
   if (!updated) return void res.status(404).json({ error: "Transaction not found" });
+
+  await logDomainEvent(db, {
+    userId: req.user!.userId, ownerType: "transaction", ownerId: updated.id, action: "updated",
+    category: updated.userCategory ?? updated.categoryPrimary, amount: updated.amount,
+    label: updated.merchantName ?? updated.merchantNameRaw, source: updated.source, sourceId: updated.sourceId,
+    metadata: { merchantNameRaw: updated.merchantNameRaw, currency: updated.currency, pending: updated.pending, ignored: updated.ignored },
+    occurredAt: new Date(updated.date),
+  });
 
   const match = await db
     .select({ id: receiptTransactionMatches.id })
