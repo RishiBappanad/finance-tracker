@@ -1,6 +1,7 @@
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import * as schema from "./schema";
 import { domainEvents } from "./schema/domain_events";
+import { evaluateGoalsForEvent } from "./goals-evaluation";
 
 /**
  * Universal Event Contract backing-store writer -- the Drizzle sibling
@@ -15,7 +16,12 @@ import { domainEvents } from "./schema/domain_events";
  * `action` is "created" | "updated" | "deleted" -- combined with
  * `ownerType` into the stored eventType ("receipt_created", etc.),
  * matching the Core Event Shape's existing per-tracker event_type
- * convention.
+ * convention. "met" | "exceeded" are two narrower actions added for
+ * Goals (see goals-evaluation.ts's evaluateGoal) -- a goal doesn't get
+ * created/updated/deleted when it transitions into or out of compliance,
+ * so forcing that into one of the other three would misdescribe what
+ * happened; combined with ownerType "goal" they produce eventType
+ * "goal_met"/"goal_exceeded", additive and specific to that one caller.
  *
  * `occurredAt` is the entity's OWN business date if it has one (e.g. a
  * receipt's purchaseDate) -- pass it explicitly whenever the entity has
@@ -23,6 +29,20 @@ import { domainEvents } from "./schema/domain_events";
  * with no such concept, where "when this happened" is genuinely just
  * "when this action was taken," and the column's own defaultNow() is
  * correct.
+ *
+ * After the insert, runs Goals' event-triggered evaluation
+ * (evaluateGoalsForEvent) for every event EXCEPT one Goals logged
+ * itself -- ownerType "goal" is the recursion guard: a goal's own
+ * `category` column always holds a real spending category or null,
+ * never the literal string "goal", so a goal_met/goal_exceeded event
+ * can never be mistaken for one affecting some other goal. This lives
+ * inside this function (rather than as a wrapper each route calls
+ * separately) so every existing mutating route gets goal-checking for
+ * free with no call-site changes, AND so tests/helpers/db-mock.ts's
+ * existing no-op mock of this exact function continues to fully replace
+ * this behavior in every mock-based test -- an app-layer wrapper tried
+ * first sat outside that mock boundary and broke ~17 unrelated tests by
+ * adding an unmocked `goals` table lookup to their DB-call sequence.
  */
 export async function logDomainEvent(
   db: NodePgDatabase<typeof schema>,
@@ -30,7 +50,7 @@ export async function logDomainEvent(
     userId: number;
     ownerType: string;
     ownerId: string;
-    action: "created" | "updated" | "deleted";
+    action: "created" | "updated" | "deleted" | "met" | "exceeded";
     category?: string | null;
     amount?: number;
     label?: string | null;
@@ -53,4 +73,7 @@ export async function logDomainEvent(
     metadataJson: JSON.stringify(params.metadata ?? {}),
     ...(params.occurredAt ? { occurredAt: params.occurredAt } : {}),
   });
+
+  if (params.ownerType === "goal") return;
+  await evaluateGoalsForEvent(db, { userId: params.userId, category: params.category ?? null });
 }

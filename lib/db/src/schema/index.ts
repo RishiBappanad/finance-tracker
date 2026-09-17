@@ -7,3 +7,4 @@ export * from "./receipt_items";
 export * from "./receipt_transaction_matches";
 export * from "./user_categories";
 export * from "./domain_events";
+export * from "./goals";

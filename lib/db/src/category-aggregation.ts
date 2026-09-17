@@ -20,9 +20,24 @@
  * entirely (WHERE userCategory IS NOT NULL) — this surfaces them instead,
  * since money that was never categorized shouldn't silently vanish from a
  * spending report.
+ *
+ * Lives in lib/db (moved from artifacts/api-server/src/lib/ 2026-09-17)
+ * rather than the app layer -- Goals' event-triggered evaluation
+ * (goals-evaluation.ts, called from domain-events.ts's logDomainEvent)
+ * needs this same computation, and that call site is inside this
+ * package. Takes `db` as an explicit parameter, the same DI style
+ * logDomainEvent() already uses, rather than importing the module-level
+ * `db` singleton -- avoids a circular import back through index.ts
+ * (which re-exports both this file and domain-events.ts) and keeps this
+ * function trivially testable against any db handle, real or mocked.
  */
-import { db } from "@workspace/db";
-import { bankTransactions, accounts, institutions, receiptTransactionMatches, receiptItems } from "@workspace/db";
+import type { NodePgDatabase } from "drizzle-orm/node-postgres";
+import * as schema from "./schema";
+import { bankTransactions } from "./schema/bank_transactions";
+import { accounts } from "./schema/accounts";
+import { institutions } from "./schema/institutions";
+import { receiptTransactionMatches } from "./schema/receipt_transaction_matches";
+import { receiptItems } from "./schema/receipt_items";
 import { eq, and, gte, lte, sql, inArray, type SQL } from "drizzle-orm";
 
 export const UNCATEGORIZED = "Uncategorized";
@@ -40,7 +55,10 @@ interface AggregateOptions {
   direction: "spending" | "earnings"; // spending: amount > 0, earnings: amount < 0
 }
 
-export async function aggregateByCategory({ userId, from, to, direction }: AggregateOptions): Promise<CategoryTotal[]> {
+export async function aggregateByCategory(
+  db: NodePgDatabase<typeof schema>,
+  { userId, from, to, direction }: AggregateOptions
+): Promise<CategoryTotal[]> {
   const amountCondition: SQL = direction === "spending" ? sql`${bankTransactions.amount} > 0` : sql`${bankTransactions.amount} < 0`;
 
   const conditions = [amountCondition, eq(bankTransactions.ignored, false), eq(institutions.userId, userId)];

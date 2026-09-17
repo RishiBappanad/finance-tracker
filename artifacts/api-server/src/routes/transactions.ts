@@ -1,12 +1,11 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
-import { bankTransactions, accounts, institutions, receiptTransactionMatches, joinTransactionOwnership, ownedByUser, logDomainEvent } from "@workspace/db";
+import { bankTransactions, accounts, institutions, receiptTransactionMatches, joinTransactionOwnership, ownedByUser, logDomainEvent, aggregateByCategory } from "@workspace/db";
 import { eq, and, gte, lte, like, sql, isNull, inArray } from "drizzle-orm";
 import { ListTransactionsQueryParams } from "@workspace/api-zod";
 import { getPlaidAdapter } from "../services/plaid.js";
 import { categorizeTransactions, type TransactionInput } from "../services/categorizer.js";
 import { getAllCategoryNames } from "../lib/categories.js";
-import { aggregateByCategory } from "../lib/category-aggregation.js";
 
 const router = Router();
 
@@ -446,14 +445,14 @@ router.get("/categories", async (_req, res) => {
 // GET /transactions/spending-by-category — aggregated spending by category
 router.get("/spending-by-category", async (req, res) => {
   const { from, to } = req.query as { from?: string; to?: string };
-  const rows = await aggregateByCategory({ userId: req.user!.userId, from, to, direction: "spending" });
+  const rows = await aggregateByCategory(db, { userId: req.user!.userId, from, to, direction: "spending" });
   res.json(rows);
 });
 
 // GET /transactions/earnings-by-category — aggregated earnings (income) by category
 router.get("/earnings-by-category", async (req, res) => {
   const { from, to } = req.query as { from?: string; to?: string };
-  const rows = await aggregateByCategory({ userId: req.user!.userId, from, to, direction: "earnings" });
+  const rows = await aggregateByCategory(db, { userId: req.user!.userId, from, to, direction: "earnings" });
   res.json(rows);
 });
 
