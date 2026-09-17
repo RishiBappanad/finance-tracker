@@ -9,6 +9,7 @@ import dashboardRouter from "./dashboard.js";
 import categoriesRouter from "./categories.js";
 import { eventsRouter, aggregationsRouter } from "./events.js";
 import goalsRouter from "./goals.js";
+import actionsRouter from "./actions.js";
 import { requireAuth } from "../middlewares/auth.js";
 
 const router: IRouter = Router();
@@ -28,5 +29,6 @@ router.use("/categories", requireAuth, categoriesRouter);
 router.use("/events", requireAuth, eventsRouter);
 router.use("/aggregations", requireAuth, aggregationsRouter);
 router.use("/goals", requireAuth, goalsRouter);
+router.use("/actions", requireAuth, actionsRouter);
 
 export default router;

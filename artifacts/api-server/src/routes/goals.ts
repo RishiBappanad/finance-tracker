@@ -3,71 +3,154 @@ import {
   db,
   goals,
   type Goal,
-  computeCurrentAmount,
-  isCompliant,
-  percentOfTarget,
+  computeGoalStatus,
   isValidComparator,
-  isValidPeriod,
   isValidSeverity,
   type Comparator,
   type Severity,
+  isValidGoalQueryPeriod,
+  parseGoalQuery,
+  type GoalQuery,
 } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 
 const router = Router();
 
+// ── Basic-goal shorthand expansion (decided 2026-09-17) ──────────────────
+// `POST`/`PATCH /goals` accepts either the full measure_query/
+// reference_query form or a flat shorthand -- see
+// RECURRING_AND_GOALS_SPEC.md's "Basic goals stay simple" section. The
+// server expands shorthand into the exact same stored shape before
+// writing; there is only one stored shape and one evaluation path.
+interface ShorthandInput {
+  category: string;
+  comparator: "lte" | "gte" | "eq";
+  target_amount: number;
+  period: "daily" | "weekly" | "monthly";
+}
+
+function isShorthandInput(body: Record<string, unknown>): body is Record<string, unknown> & ShorthandInput {
+  return typeof body.category === "string" && typeof body.target_amount === "number" && typeof body.period === "string" && body.measure_query === undefined;
+}
+
+function expandShorthand(input: ShorthandInput): { measureQuery: GoalQuery; referenceAmount: number } {
+  return {
+    measureQuery: {
+      aggregation: "sum",
+      filters: [{ field: "category", operator: "eq", value: input.category }],
+      timeWindow: { kind: "current_period", period: input.period },
+    },
+    referenceAmount: input.target_amount,
+  };
+}
+
+// ── Request-body validation for the full (non-shorthand) form ───────────
+// Every aggregation/field/operator value is re-validated here via
+// parseGoalQuery (goal-query.ts) even though it will be validated again
+// on every read -- rejecting an invalid query at write time gives a
+// caller an immediate 400 instead of a query that silently fails to
+// evaluate later.
+function validateFullForm(body: Record<string, unknown>): string | null {
+  const measureQuery = parseGoalQuery(body.measure_query);
+  if (typeof measureQuery === "string") return `measure_query: ${measureQuery}`;
+
+  const hasAmount = typeof body.reference_amount === "number";
+  const hasQuery = body.reference_query !== undefined && body.reference_query !== null;
+  if (hasAmount === hasQuery) return "exactly one of reference_amount, reference_query is required";
+  if (hasQuery) {
+    const referenceQuery = parseGoalQuery(body.reference_query);
+    if (typeof referenceQuery === "string") return `reference_query: ${referenceQuery}`;
+  }
+  return null;
+}
+
+const DUPLICATE_GOAL_ERROR = "A goal with this definition already exists";
+
 function serializeGoal(g: Goal) {
   return {
     id: g.id,
-    category: g.category,
-    comparator: g.comparator,
-    target_amount: g.targetAmount,
-    period: g.period,
+    label: g.label,
     severity: g.severity,
     is_active: g.isActive,
+    comparator: g.comparator,
+    tolerance_percent: g.tolerancePercent,
+    measure_query: g.measureQuery,
+    reference_amount: g.referenceAmount,
+    reference_query: g.referenceQuery,
+    inflation_adjusted: g.inflationAdjusted,
+    notify_on_crossing: g.notifyOnCrossing,
     created_at: g.createdAt.toISOString(),
     updated_at: g.updatedAt.toISOString(),
   };
 }
-
-const DUPLICATE_GOAL_ERROR = "A goal with this category, period, and severity already exists";
 
 // GET /goals?active=true
 router.get("/", async (req, res) => {
   const conditions = [eq(goals.userId, req.user!.userId)];
   if (req.query.active === "true") conditions.push(eq(goals.isActive, true));
 
-  const rows = await db.select().from(goals).where(and(...conditions)).orderBy(goals.category, goals.period, goals.severity);
+  const rows = await db.select().from(goals).where(and(...conditions)).orderBy(goals.createdAt);
   res.json(rows.map(serializeGoal));
 });
 
-// POST /goals -- severity defaults to 'target' if omitted
-router.post("/", async (req, res) => {
-  const { category, comparator, target_amount, period, severity } = req.body;
-  const resolvedSeverity = severity ?? "target";
+interface ParsedGoalInput {
+  measureQuery: GoalQuery;
+  referenceAmount: number | null;
+  referenceQuery: GoalQuery | null;
+}
 
-  if (!isValidComparator(comparator)) return void res.status(400).json({ error: "comparator must be one of: lte, gte, eq" });
-  if (typeof target_amount !== "number") return void res.status(400).json({ error: "target_amount is required and must be a number" });
-  if (!isValidPeriod(period)) return void res.status(400).json({ error: "period must be one of: daily, weekly, monthly" });
-  if (!isValidSeverity(resolvedSeverity)) return void res.status(400).json({ error: "severity must be one of: warning, target" });
+/** Shared by POST and PATCH: accepts either shorthand or full-form input
+ * and returns the fields to write, or an error string. Full-form-only
+ * fields (comparator/tolerance_percent/severity/label/is_active/
+ * inflation_adjusted/notify_on_crossing) are read directly off the body
+ * either way -- shorthand only ever supplies measure_query/reference_*. */
+function parseGoalInput(body: Record<string, unknown>): ParsedGoalInput | string {
+  if (isShorthandInput(body)) {
+    if (!isValidComparator(body.comparator) || (body.comparator as string) === "within_tolerance_percent") return "comparator must be one of: lte, gte, eq for shorthand input";
+    if (!isValidGoalQueryPeriod(body.period)) return "period must be one of: daily, weekly, monthly";
+    const expanded = expandShorthand(body);
+    return { measureQuery: expanded.measureQuery, referenceAmount: expanded.referenceAmount, referenceQuery: null };
+  }
+
+  const err = validateFullForm(body);
+  if (err) return err;
+  const measureQuery = parseGoalQuery(body.measure_query) as GoalQuery;
+  const referenceQuery = body.reference_query != null ? (parseGoalQuery(body.reference_query) as GoalQuery) : null;
+  return { measureQuery, referenceAmount: referenceQuery ? null : (body.reference_amount as number), referenceQuery };
+}
+
+// POST /goals -- severity defaults to 'target'; accepts shorthand or full form
+router.post("/", async (req, res) => {
+  const body = req.body as Record<string, unknown>;
+  const severity = body.severity ?? "target";
+  const comparator = body.comparator;
+
+  if (!isValidComparator(comparator)) return void res.status(400).json({ error: "comparator must be one of: lte, gte, eq, within_tolerance_percent" });
+  if (comparator === "within_tolerance_percent" && typeof body.tolerance_percent !== "number") return void res.status(400).json({ error: "tolerance_percent is required when comparator is within_tolerance_percent" });
+  if (!isValidSeverity(severity)) return void res.status(400).json({ error: "severity must be one of: warning, target" });
+
+  const parsed = parseGoalInput(body);
+  if (typeof parsed === "string") return void res.status(400).json({ error: parsed });
 
   try {
     const [row] = await db
       .insert(goals)
       .values({
         userId: req.user!.userId,
-        category: category ?? null,
+        label: typeof body.label === "string" ? body.label : null,
+        severity,
         comparator,
-        targetAmount: target_amount,
-        period,
-        severity: resolvedSeverity,
+        tolerancePercent: comparator === "within_tolerance_percent" ? (body.tolerance_percent as number) : null,
+        measureQuery: parsed.measureQuery,
+        referenceAmount: parsed.referenceAmount,
+        referenceQuery: parsed.referenceQuery,
+        inflationAdjusted: Boolean(body.inflation_adjusted),
+        notifyOnCrossing: body.notify_on_crossing === undefined ? true : Boolean(body.notify_on_crossing),
       })
       .returning();
 
     res.status(201).json(serializeGoal(row));
   } catch (e: any) {
-    // Same e.cause.code pattern routes/categories.ts's 23505 handling
-    // uses -- Drizzle wraps the real pg driver error under e.cause, not e.
     if (e.cause?.code === "23505") return void res.status(409).json({ error: DUPLICATE_GOAL_ERROR });
     throw e;
   }
@@ -76,20 +159,29 @@ router.post("/", async (req, res) => {
 // PATCH /goals/:id -- edit any field, pause (is_active: false), or re-tier (severity)
 router.patch("/:id", async (req, res) => {
   const id = Number(req.params.id);
-  const { category, comparator, target_amount, period, severity, is_active } = req.body;
+  const body = req.body as Record<string, unknown>;
 
-  if (comparator !== undefined && !isValidComparator(comparator)) return void res.status(400).json({ error: "comparator must be one of: lte, gte, eq" });
-  if (period !== undefined && !isValidPeriod(period)) return void res.status(400).json({ error: "period must be one of: daily, weekly, monthly" });
-  if (severity !== undefined && !isValidSeverity(severity)) return void res.status(400).json({ error: "severity must be one of: warning, target" });
-  if (target_amount !== undefined && typeof target_amount !== "number") return void res.status(400).json({ error: "target_amount must be a number" });
+  if (body.comparator !== undefined && !isValidComparator(body.comparator)) return void res.status(400).json({ error: "comparator must be one of: lte, gte, eq, within_tolerance_percent" });
+  if (body.severity !== undefined && !isValidSeverity(body.severity)) return void res.status(400).json({ error: "severity must be one of: warning, target" });
+  if (body.comparator === "within_tolerance_percent" && typeof body.tolerance_percent !== "number") return void res.status(400).json({ error: "tolerance_percent is required when comparator is within_tolerance_percent" });
 
   const updates: Partial<typeof goals.$inferInsert> = { updatedAt: new Date() };
-  if (category !== undefined) updates.category = category;
-  if (comparator !== undefined) updates.comparator = comparator;
-  if (target_amount !== undefined) updates.targetAmount = target_amount;
-  if (period !== undefined) updates.period = period;
-  if (severity !== undefined) updates.severity = severity;
-  if (is_active !== undefined) updates.isActive = Boolean(is_active);
+  if (body.label !== undefined) updates.label = body.label === null ? null : String(body.label);
+  if (body.severity !== undefined) updates.severity = body.severity as string;
+  if (body.is_active !== undefined) updates.isActive = Boolean(body.is_active);
+  if (body.comparator !== undefined) updates.comparator = body.comparator as string;
+  if (body.tolerance_percent !== undefined) updates.tolerancePercent = body.tolerance_percent as number;
+  if (body.inflation_adjusted !== undefined) updates.inflationAdjusted = Boolean(body.inflation_adjusted);
+  if (body.notify_on_crossing !== undefined) updates.notifyOnCrossing = Boolean(body.notify_on_crossing);
+
+  const hasQueryEdit = body.measure_query !== undefined || body.reference_amount !== undefined || body.reference_query !== undefined || body.category !== undefined || body.target_amount !== undefined || body.period !== undefined;
+  if (hasQueryEdit) {
+    const parsed = parseGoalInput(body);
+    if (typeof parsed === "string") return void res.status(400).json({ error: parsed });
+    updates.measureQuery = parsed.measureQuery;
+    updates.referenceAmount = parsed.referenceAmount;
+    updates.referenceQuery = parsed.referenceQuery;
+  }
 
   try {
     const [row] = await db
@@ -124,28 +216,31 @@ async function loadOwnedGoal(userId: number, id: number): Promise<Goal | undefin
 }
 
 interface GoalStatusResponse {
-  current_amount: number;
-  target_amount: number;
+  measure_value: number;
+  reference_value: number;
+  comparator: Comparator;
+  tolerance_percent: number | null;
   percent: number;
   on_track: boolean;
   severity: Severity;
 }
 
-/** A pure, non-mutating read -- unlike @workspace/db's evaluateGoal (the
- * event-triggered path), this never touches lastStatus/
- * lastEvaluatedPeriodStart and never logs a domain event. Celebratory/
- * warning logging happens at write-time now (inside logDomainEvent()),
- * not whenever someone happens to check a goal's status; the two paths
- * share computeCurrentAmount/isCompliant so they can never disagree on
- * the number itself. */
+/** A pure, non-mutating read -- goals is pure definition now (no
+ * lastStatus/lastEvaluatedPeriodStart to touch), so this and the event-
+ * triggered path (goals-evaluation.ts's evaluateGoalTransition) both
+ * call the exact same computeGoalStatus, and can never disagree on the
+ * number. Celebratory/warning logging happens only from the event-
+ * triggered path, never from a status read. */
 async function readGoalStatus(goal: Goal): Promise<GoalStatusResponse> {
-  const currentAmount = await computeCurrentAmount(db, goal);
+  const evaluated = await computeGoalStatus(db, goal);
   return {
-    current_amount: currentAmount,
-    target_amount: goal.targetAmount,
-    percent: percentOfTarget(currentAmount, goal.targetAmount),
-    on_track: isCompliant(goal.comparator as Comparator, currentAmount, goal.targetAmount),
-    severity: goal.severity as Severity,
+    measure_value: evaluated.measure_value,
+    reference_value: evaluated.reference_value,
+    comparator: evaluated.comparator,
+    tolerance_percent: evaluated.tolerance_percent,
+    percent: evaluated.percent,
+    on_track: evaluated.is_compliant,
+    severity: evaluated.severity,
   };
 }
 
@@ -157,20 +252,76 @@ router.get("/:id/status", async (req, res) => {
   res.json(await readGoalStatus(goal));
 });
 
-// GET /goals/status-by-category -- every active goal, evaluated, grouped by
-// category (a null-category "everything" goal groups under "__all__") so a
-// frontend can render "warning + hard cap, both evaluated" per category in
-// one call instead of one request per tier per category.
+/** The measure_query's own category filter, if it's a single eq filter on
+ * "category" -- used only to key the status-by-category grouping below;
+ * an advanced goal with no such filter (e.g. amount-only, or an "in"
+ * filter) groups under "__other__" rather than being dropped. */
+function categoryHintFor(goal: Goal): string {
+  const query = goal.measureQuery as GoalQuery | null;
+  const categoryFilter = query?.filters?.find((f) => f.field === "category" && f.operator === "eq");
+  return typeof categoryFilter?.value === "string" ? categoryFilter.value : "__other__";
+}
+
+// GET /goals/status-by-category -- convenience grouping keyed by
+// measure_query.filters' category field, where present (see
+// categoryHintFor) -- lets a frontend render "warning + hard cap, both
+// evaluated" per category in one call, same purpose the old flat-schema
+// version served, adapted to the fact that "category" is no longer a
+// real column.
 router.get("/status-by-category", async (req, res) => {
   const rows = await db.select().from(goals).where(and(eq(goals.userId, req.user!.userId), eq(goals.isActive, true)));
 
   const byCategory: Record<string, GoalStatusResponse[]> = {};
   for (const goal of rows) {
-    const key = goal.category ?? "__all__";
+    const key = categoryHintFor(goal);
     (byCategory[key] ??= []).push(await readGoalStatus(goal));
   }
 
   res.json(byCategory);
+});
+
+// GET /goals/presets -- named starter configs, both basic (shorthand) and
+// advanced (full measure_query/reference_query) tiers. Pre-filled request
+// bodies only, per RECURRING_AND_GOALS_SPEC.md's "Presets" section -- no
+// new server-side concept, so this list can grow without a schema change.
+router.get("/presets", (_req, res) => {
+  res.json({
+    basic: [
+      { name: "Monthly cap", comparator: "lte", period: "monthly" },
+      { name: "Weekly cap", comparator: "lte", period: "weekly" },
+      { name: "Minimum monthly investment/income", comparator: "gte", period: "monthly" },
+    ],
+    advanced: [
+      {
+        name: "Rolling 3-month average, ±15%",
+        comparator: "within_tolerance_percent",
+        tolerance_percent: 15,
+        measure_query: { aggregation: "sum", filters: [], time_window: { kind: "current_period", period: "monthly" } },
+        reference_query: { aggregation: "mean", filters: [], time_window: { kind: "trailing", period: "monthly", count: 3 } },
+      },
+      {
+        name: "Year-over-year, inflation-adjusted, ±10%",
+        comparator: "within_tolerance_percent",
+        tolerance_percent: 10,
+        inflation_adjusted: true,
+        measure_query: { aggregation: "sum", filters: [], time_window: { kind: "current_period", period: "monthly" } },
+        reference_query: { aggregation: "mean", filters: [], time_window: { kind: "same_period_last_year", period: "monthly", count: 1 } },
+      },
+      {
+        name: "Outlier watch (95th percentile this year)",
+        comparator: "lte",
+        measure_query: { aggregation: "percentile", percentile: 95, filters: [], time_window: { kind: "current_period", period: "monthly" } },
+        reference_query: { aggregation: "percentile", percentile: 95, filters: [], time_window: { kind: "all_time" } },
+      },
+      {
+        name: "Week-over-week trend, ±10%",
+        comparator: "within_tolerance_percent",
+        tolerance_percent: 10,
+        measure_query: { aggregation: "sum", filters: [], time_window: { kind: "current_period", period: "weekly" } },
+        reference_query: { aggregation: "mean", filters: [], time_window: { kind: "trailing", period: "weekly", count: 1 } },
+      },
+    ],
+  });
 });
 
 export default router;

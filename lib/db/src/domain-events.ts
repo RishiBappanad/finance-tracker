@@ -32,17 +32,20 @@ import { evaluateGoalsForEvent } from "./goals-evaluation";
  *
  * After the insert, runs Goals' event-triggered evaluation
  * (evaluateGoalsForEvent) for every event EXCEPT one Goals logged
- * itself -- ownerType "goal" is the recursion guard: a goal's own
- * `category` column always holds a real spending category or null,
- * never the literal string "goal", so a goal_met/goal_exceeded event
- * can never be mistaken for one affecting some other goal. This lives
- * inside this function (rather than as a wrapper each route calls
+ * itself -- ownerType "goal" is the recursion guard, so a goal_met/
+ * goal_exceeded event can never trigger re-evaluation of any goal. This
+ * lives inside this function (rather than as a wrapper each route calls
  * separately) so every existing mutating route gets goal-checking for
  * free with no call-site changes, AND so tests/helpers/db-mock.ts's
  * existing no-op mock of this exact function continues to fully replace
  * this behavior in every mock-based test -- an app-layer wrapper tried
  * first sat outside that mock boundary and broke ~17 unrelated tests by
  * adding an unmocked `goals` table lookup to their DB-call sequence.
+ *
+ * Needs `.returning({ id })` (not just an insert) because Goals'
+ * evaluation compares "with this event" vs. "without this event" -- see
+ * goals-evaluation.ts's evaluateGoalTransition -- which requires knowing
+ * the just-inserted row's own id to exclude it from the "before" query.
  */
 export async function logDomainEvent(
   db: NodePgDatabase<typeof schema>,
@@ -60,20 +63,30 @@ export async function logDomainEvent(
     occurredAt?: Date;
   }
 ): Promise<void> {
-  await db.insert(domainEvents).values({
-    userId: params.userId,
-    ownerType: params.ownerType,
-    ownerId: params.ownerId,
-    eventType: `${params.ownerType}_${params.action}`,
-    category: params.category ?? null,
-    amount: params.amount ?? 0,
-    label: params.label ?? null,
-    source: params.source ?? null,
-    sourceId: params.sourceId ?? null,
-    metadataJson: JSON.stringify(params.metadata ?? {}),
-    ...(params.occurredAt ? { occurredAt: params.occurredAt } : {}),
-  });
+  const eventType = `${params.ownerType}_${params.action}`;
+  const [inserted] = await db
+    .insert(domainEvents)
+    .values({
+      userId: params.userId,
+      ownerType: params.ownerType,
+      ownerId: params.ownerId,
+      eventType,
+      category: params.category ?? null,
+      amount: params.amount ?? 0,
+      label: params.label ?? null,
+      source: params.source ?? null,
+      sourceId: params.sourceId ?? null,
+      metadataJson: JSON.stringify(params.metadata ?? {}),
+      ...(params.occurredAt ? { occurredAt: params.occurredAt } : {}),
+    })
+    .returning({ id: domainEvents.id });
 
   if (params.ownerType === "goal") return;
-  await evaluateGoalsForEvent(db, { userId: params.userId, category: params.category ?? null });
+  await evaluateGoalsForEvent(db, {
+    id: inserted!.id,
+    userId: params.userId,
+    category: params.category ?? null,
+    eventType,
+    ownerType: params.ownerType,
+  });
 }

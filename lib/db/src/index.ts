@@ -17,4 +17,7 @@ export * from "./schema";
 export * from "./user-scoping";
 export * from "./domain-events";
 export * from "./category-aggregation";
+export * from "./goal-query";
 export * from "./goals-evaluation";
+export * from "./cpi-lookup";
+export * from "./cpi-sync";
