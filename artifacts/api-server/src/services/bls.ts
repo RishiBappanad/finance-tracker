@@ -74,6 +74,13 @@ export async function fetchCpiSeries(startYear: number, endYear: number): Promis
 
     return series.data
       .filter((point) => /^M(0[1-9]|1[0-2])$/.test(point.period))
+      // BLS returns value: "-" (not a number) for a month with no data yet
+      // published, or withheld for an out-of-band reason (confirmed live,
+      // 2026-09-17: October 2025 returned "-" with a footnote citing a
+      // lapse in appropriations). Number("-") is NaN, which would
+      // silently corrupt any inflation-adjustment arithmetic that reads
+      // it -- skip the point instead of storing a NaN index_value.
+      .filter((point) => point.value.trim() !== "-" && !Number.isNaN(Number(point.value)))
       .map((point) => {
         const month = point.period.slice(1); // "M08" -> "08"
         return { period: `${point.year}-${month}-01`, indexValue: Number(point.value) };
