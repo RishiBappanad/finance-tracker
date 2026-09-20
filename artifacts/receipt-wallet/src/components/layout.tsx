@@ -1,12 +1,13 @@
 import { ReactNode, useState } from "react";
 import { Link, useLocation } from "wouter";
-import { 
-  LayoutDashboard, 
-  Receipt, 
-  ArrowLeftRight, 
+import {
+  LayoutDashboard,
+  Receipt,
+  ArrowLeftRight,
   Building2,
   Wallet,
   PieChart,
+  Target,
   LogOut,
   Menu,
   X
@@ -32,6 +33,7 @@ export function Layout({ children }: LayoutProps) {
     { href: "/receipts", label: "Receipts", icon: Receipt },
     { href: "/transactions", label: "Transactions", icon: ArrowLeftRight },
     { href: "/spending", label: "Cash Flow", icon: PieChart },
+    { href: "/goals", label: "Goals", icon: Target },
     { href: "/reconcile", label: "Reconcile", icon: Wallet },
     { href: "/accounts", label: "Accounts", icon: Building2 },
   ];
