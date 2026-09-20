@@ -16,6 +16,8 @@ import {
 } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { CategoryCombobox } from "@/components/category-combobox";
+import { MultiSelectFilter } from "@/components/multi-select-filter";
 import {
   Target,
   Plus,
@@ -65,7 +67,7 @@ interface GoalQuery {
   aggregation: Aggregation;
   percentile?: number;
   filters: FilterCondition[];
-  time_window: TimeWindow;
+  timeWindow: TimeWindow;
 }
 
 interface Goal {
@@ -104,9 +106,14 @@ interface Preset {
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
+// Handles both shapes categoryFilters() (below) can produce: a single
+// `eq` filter, or an `in` filter for a combined multi-category goal --
+// joins the latter into one readable label ("Food & Dining + Groceries").
 function categoryFromQuery(query: GoalQuery | null | undefined): string | null {
-  const filter = query?.filters.find((f) => f.field === "category" && f.operator === "eq");
-  return typeof filter?.value === "string" ? filter.value : null;
+  const filter = query?.filters.find((f) => f.field === "category" && (f.operator === "eq" || f.operator === "in"));
+  if (!filter) return null;
+  if (Array.isArray(filter.value)) return filter.value.join(" + ");
+  return typeof filter.value === "string" ? filter.value : null;
 }
 
 function comparatorLabel(comparator: Comparator, tolerancePercent: number | null): string {
@@ -140,15 +147,15 @@ function formatMoney(n: number): string {
 }
 
 function goalSubtitle(goal: Goal): string {
-  const period = goal.measure_query.time_window.period;
+  const period = goal.measure_query.timeWindow.period;
   if (goal.reference_query) {
     const ref = goal.reference_query;
     const baselineDesc =
-      ref.time_window.kind === "trailing"
-        ? `trailing ${ref.time_window.count}-${periodLabel(ref.time_window.period)} ${ref.aggregation}`
-        : ref.time_window.kind === "same_period_last_year"
-        ? `same ${periodLabel(ref.time_window.period)} ${ref.time_window.count === 1 ? "last year" : `${ref.time_window.count} years back`}`
-        : ref.time_window.kind === "all_time"
+      ref.timeWindow.kind === "trailing"
+        ? `trailing ${ref.timeWindow.count}-${periodLabel(ref.timeWindow.period)} ${ref.aggregation}`
+        : ref.timeWindow.kind === "same_period_last_year"
+        ? `same ${periodLabel(ref.timeWindow.period)} ${ref.timeWindow.count === 1 ? "last year" : `${ref.timeWindow.count} years back`}`
+        : ref.timeWindow.kind === "all_time"
         ? "all-time"
         : "a fixed range";
     return `${goal.measure_query.aggregation} per ${periodLabel(period)}, vs. ${baselineDesc}${goal.inflation_adjusted ? " (inflation-adjusted)" : ""}`;
@@ -268,7 +275,15 @@ const AGGREGATIONS: { value: Aggregation; label: string }[] = [
 type BaselineKind = "trailing" | "same_period_last_year" | "all_time" | "fixed_range";
 
 interface AdvancedFormState {
-  category: string;
+  // Independent category sets for each side of the comparison -- e.g.
+  // "cap Food & Dining" measured against "my Income category went up,
+  // so let this baseline reflect that" is a genuinely different category
+  // on each side, not the same one over a different window. Each is
+  // multi-select ([] = no category filter, i.e. every category; 1 value
+  // -> an `eq` filter; 2+ -> an `in` filter) so "these categories
+  // combined shouldn't exceed X" is expressible directly.
+  measureCategories: string[];
+  referenceCategories: string[];
   measureAggregation: Aggregation;
   measurePercentile: number;
   period: Period;
@@ -291,7 +306,8 @@ interface AdvancedFormState {
 
 function defaultAdvancedForm(): AdvancedFormState {
   return {
-    category: "",
+    measureCategories: [],
+    referenceCategories: [],
     measureAggregation: "sum",
     measurePercentile: 95,
     period: "monthly",
@@ -326,14 +342,23 @@ function buildReferenceTimeWindow(form: AdvancedFormState): TimeWindow {
   }
 }
 
-function buildAdvancedPayload(form: AdvancedFormState) {
-  const categoryFilter: FilterCondition[] = form.category ? [{ field: "category", operator: "eq", value: form.category }] : [];
+// []  -> no category filter at all (every category counts)
+// [c] -> a single `eq` filter, the common case
+// [..]-> an `in` filter -- "these categories combined" (a real request:
+//        e.g. Food & Dining + Groceries + Entertainment together capped
+//        at one amount, not three separate goals).
+function categoryFilters(categories: string[]): FilterCondition[] {
+  if (categories.length === 0) return [];
+  if (categories.length === 1) return [{ field: "category", operator: "eq", value: categories[0] }];
+  return [{ field: "category", operator: "in", value: categories }];
+}
 
+function buildAdvancedPayload(form: AdvancedFormState) {
   const measure_query: GoalQuery = {
     aggregation: form.measureAggregation,
     ...(form.measureAggregation === "percentile" ? { percentile: form.measurePercentile } : {}),
-    filters: categoryFilter,
-    time_window: { kind: "current_period", period: form.period },
+    filters: categoryFilters(form.measureCategories),
+    timeWindow: { kind: "current_period", period: form.period },
   };
 
   const base: Record<string, unknown> = {
@@ -349,18 +374,26 @@ function buildAdvancedPayload(form: AdvancedFormState) {
     return { ...base, reference_amount: form.referenceAmount, reference_query: null, inflation_adjusted: false };
   }
 
+  // Deliberately independent from measureCategories -- a baseline
+  // computed from a DIFFERENT category (or set of categories) than
+  // what's being measured is exactly the point (e.g. "let my food budget
+  // flex with my income category," not just "flex with my own history").
   const reference_query: GoalQuery = {
     aggregation: form.refAggregation,
     ...(form.refAggregation === "percentile" ? { percentile: form.refPercentile } : {}),
-    filters: categoryFilter,
-    time_window: buildReferenceTimeWindow(form),
+    filters: categoryFilters(form.referenceCategories),
+    timeWindow: buildReferenceTimeWindow(form),
   };
   return { ...base, reference_query, reference_amount: null, inflation_adjusted: form.inflationAdjusted };
 }
 
 function applyPresetToAdvancedForm(preset: Preset, category: string): AdvancedFormState {
   const form = defaultAdvancedForm();
-  form.category = category;
+  // Every preset's own measure_query/reference_query share one category
+  // by design (that's what a preset IS) -- start both sides there; the
+  // user can then split referenceCategories off to something else.
+  form.measureCategories = [category];
+  form.referenceCategories = [category];
   form.comparator = preset.comparator;
   form.severity = "target";
   if (preset.tolerance_percent !== undefined) form.tolerancePercent = preset.tolerance_percent;
@@ -368,13 +401,13 @@ function applyPresetToAdvancedForm(preset: Preset, category: string): AdvancedFo
   if (preset.measure_query) {
     form.measureAggregation = preset.measure_query.aggregation;
     if (preset.measure_query.percentile !== undefined) form.measurePercentile = preset.measure_query.percentile;
-    if (preset.measure_query.time_window.period) form.period = preset.measure_query.time_window.period;
+    if (preset.measure_query.timeWindow.period) form.period = preset.measure_query.timeWindow.period;
   }
   if (preset.reference_query) {
     form.referenceMode = "computed";
     form.refAggregation = preset.reference_query.aggregation;
     if (preset.reference_query.percentile !== undefined) form.refPercentile = preset.reference_query.percentile;
-    const tw = preset.reference_query.time_window;
+    const tw = preset.reference_query.timeWindow;
     form.baselineKind = tw.kind as BaselineKind;
     if (tw.count !== undefined) {
       if (tw.kind === "trailing") form.trailingCount = tw.count;
@@ -459,10 +492,10 @@ function CreateGoalDialog({ open, onOpenChange, categories, onCreated }: CreateG
   };
 
   const submitAdvanced = async () => {
-    if (!advanced.category) {
-      toast({ title: "Missing info", description: "Pick a category.", variant: "destructive" });
-      return;
-    }
+    // No category is a valid, meaningful choice here (unlike Basic/
+    // Presets) -- an empty selection means "every category," e.g. "total
+    // spending this month" -- so there's nothing to validate before
+    // submitting; the server validates comparator/aggregation shape.
     setIsSubmitting(true);
     try {
       const res = await authFetch(`${API_BASE}/api/goals`, {
@@ -517,18 +550,13 @@ function CreateGoalDialog({ open, onOpenChange, categories, onCreated }: CreateG
           <TabsContent value="basic" className="space-y-4 pt-2">
             <div className="space-y-1.5">
               <Label>Category</Label>
-              <Select value={basicCategory} onValueChange={setBasicCategory}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Choose a category" />
-                </SelectTrigger>
-                <SelectContent>
-                  {categories.map((c) => (
-                    <SelectItem key={c} value={c}>
-                      {c}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <CategoryCombobox
+                categories={categories}
+                value={basicCategory || null}
+                onChange={setBasicCategory}
+                placeholder="Choose a category"
+                triggerClassName="w-full"
+              />
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
@@ -587,18 +615,13 @@ function CreateGoalDialog({ open, onOpenChange, categories, onCreated }: CreateG
           <TabsContent value="presets" className="space-y-4 pt-2">
             <div className="space-y-1.5">
               <Label>Apply to category</Label>
-              <Select value={presetCategory} onValueChange={setPresetCategory}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Choose a category" />
-                </SelectTrigger>
-                <SelectContent>
-                  {categories.map((c) => (
-                    <SelectItem key={c} value={c}>
-                      {c}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <CategoryCombobox
+                categories={categories}
+                value={presetCategory || null}
+                onChange={setPresetCategory}
+                placeholder="Choose a category"
+                triggerClassName="w-full"
+              />
             </div>
             {!presets ? (
               <div className="flex justify-center p-8">
@@ -648,24 +671,23 @@ function CreateGoalDialog({ open, onOpenChange, categories, onCreated }: CreateG
               <Label>Label (optional)</Label>
               <Input value={advanced.label} onChange={(e) => setAdvanced({ ...advanced, label: e.target.value })} placeholder="Dining budget" />
             </div>
-            <div className="space-y-1.5">
-              <Label>Category</Label>
-              <Select value={advanced.category} onValueChange={(v) => setAdvanced({ ...advanced, category: v })}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Choose a category" />
-                </SelectTrigger>
-                <SelectContent>
-                  {categories.map((c) => (
-                    <SelectItem key={c} value={c}>
-                      {c}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
             <Card className="p-3 shadow-none border space-y-3">
               <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">What's being measured</p>
+              <div className="space-y-1.5">
+                <Label className="text-xs">
+                  Categories{" "}
+                  <span className="text-muted-foreground font-normal normal-case">
+                    (pick several to cap them combined — none picked means every category)
+                  </span>
+                </Label>
+                <MultiSelectFilter
+                  label="Every category"
+                  options={categories}
+                  selected={advanced.measureCategories}
+                  onChange={(v) => setAdvanced({ ...advanced, measureCategories: v })}
+                  className="w-full min-w-0"
+                />
+              </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
                   <Label className="text-xs">Aggregation</Label>
@@ -746,6 +768,30 @@ function CreateGoalDialog({ open, onOpenChange, categories, onCreated }: CreateG
                 </div>
               ) : (
                 <div className="space-y-3">
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-xs">
+                        Baseline categories{" "}
+                        <span className="text-muted-foreground font-normal">(can differ from what's measured)</span>
+                      </Label>
+                      <Button
+                        type="button"
+                        variant="link"
+                        size="sm"
+                        className="h-auto p-0 text-xs"
+                        onClick={() => setAdvanced({ ...advanced, referenceCategories: advanced.measureCategories })}
+                      >
+                        Same as measured
+                      </Button>
+                    </div>
+                    <MultiSelectFilter
+                      label="Every category"
+                      options={categories}
+                      selected={advanced.referenceCategories}
+                      onChange={(v) => setAdvanced({ ...advanced, referenceCategories: v })}
+                      className="w-full min-w-0"
+                    />
+                  </div>
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1.5">
                       <Label className="text-xs">Aggregation</Label>
