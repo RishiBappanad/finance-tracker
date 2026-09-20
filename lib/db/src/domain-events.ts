@@ -88,5 +88,6 @@ export async function logDomainEvent(
     category: params.category ?? null,
     eventType,
     ownerType: params.ownerType,
+    action: params.action,
   });
 }

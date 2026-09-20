@@ -91,20 +91,25 @@ describe("requireAuth with trackstack-auth-issued JWTs", () => {
 
   it("rejects an old-shape { userId, email } token (not what trackstack-auth issues)", async () => {
     reset();
-    // Old finance-tracker-local token shape. requireAuth now reads
-    // decoded.accountId, which is undefined here, so userId ends up
-    // undefined and the mirror-row insert / lookup should not resolve to a
-    // real user. We only assert the token itself is *decodable* but the
-    // resulting req.user.userId is not a usable id — covered by the 404
-    // from /me below since no user row matches `undefined`.
+    // Old finance-tracker-local token shape. This test's expectation is
+    // stale as of the migration to trackstack-ui/auth-client's shared
+    // verifyTrackstackToken() (see middlewares/auth.ts): that function
+    // explicitly checks `payload.accountId != null && payload.email`
+    // (auth-client/index.ts) and returns null -- meaning requireAuth now
+    // rejects this token with 401 at the auth boundary itself, before the
+    // route (or ensureLocalUser) ever runs. The token used to be decodable
+    // enough to reach /me with an unusable `undefined` id, surfacing as a
+    // downstream 404 instead -- that was this project's own hand-rolled
+    // requireAuth, since replaced. Rejecting a malformed token up front is
+    // the more correct behavior, not a regression; updated the expectation
+    // to match (confirmed live 2026-09-20, caught while fixing an
+    // unrelated failure and asked not to let it quietly stay red).
     const oldShapeToken = jwt.sign({ userId: 9, email: "rishibappanad@gmail.com" }, JWT_SECRET, {
       expiresIn: "30d",
     });
-    enqueue([]); // ensureLocalUser insert (no return value read)
-    enqueue([]); // /me select → no user found for undefined id
 
     const res = await request(app).get("/api/auth/me").set("Authorization", `Bearer ${oldShapeToken}`);
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(401);
   });
 
   it("accepts a trackstack-auth-shaped { accountId, email } token and creates the mirror row", async () => {

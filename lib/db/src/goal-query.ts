@@ -295,11 +295,69 @@ export function resolveTimeWindow(tw: TimeWindow, now: Date = new Date()): DateR
   return [{ from: new Date(0), to: new Date(8_640_000_000_000_000) }];
 }
 
+// ── Current-state deduplication ──────────────────────────────────────────
+
+/** domain_events is an append-only CRUD log (EVENT_CONTRACT_SPEC.md) -- a
+ * row per create/update/delete, not one row per owner. Summing `amount`
+ * directly over it double-counts every owner that's ever been edited
+ * more than once (confirmed live 2026-09-19: a single $60 transaction,
+ * PATCHed twice, summed to $120). The fix is a CTE that collapses each
+ * CRUD-tracked owner (event_type ending in _created/_updated/_deleted --
+ * see logDomainEvent's closed `action` union in domain-events.ts) down
+ * to its single latest row, dropping owners whose latest row is a
+ * deletion entirely (a deleted thing shouldn't count toward a current
+ * total, same as it wouldn't appear in a live SELECT against the real
+ * owning table). "Occurrence" events -- anything that ISN'T create/
+ * update/delete (today: goal_met/goal_exceeded) -- are independent,
+ * repeatable facts, not revisions of one mutable thing, and are kept in
+ * full, one row each, unioned in unchanged. A future action added to
+ * logDomainEvent's union that isn't create/update/delete falls into this
+ * same "keep in full" bucket by default -- silently dropping unknown
+ * data would be worse than double-counting it.
+ *
+ * The CTE is named `domain_events`, shadowing the real table for the
+ * rest of the query (standard Postgres CTE scoping) -- every existing
+ * Drizzle column reference below (domainEvents.category, .amount, etc.,
+ * via buildFilterCondition and the aggregation SELECTs) compiles to
+ * `"domain_events"."<col>"`, which resolves against this CTE unchanged,
+ * so nothing downstream of this function needed to know the base
+ * relation changed.
+ *
+ * `excludeEventId` (the event-triggered "before" evaluation's own
+ * just-inserted row) is applied INSIDE the dedup step, not just filtered
+ * out of the final result -- excluding it only afterward would, for an
+ * owner whose newest row happens to BE the excluded one, wrongly yield
+ * zero rows for that owner instead of falling back to its previous
+ * latest state. */
+function currentStateCte(userId: number, excludeEventId?: number): SQL {
+  const exclude = excludeEventId !== undefined ? sql`AND id != ${excludeEventId}` : sql``;
+  return sql`
+    latest_state AS (
+      SELECT DISTINCT ON (owner_type, owner_id) *
+      FROM domain_events
+      WHERE user_id = ${userId}
+        AND event_type ~ '_(created|updated|deleted)$'
+        ${exclude}
+      ORDER BY owner_type, owner_id, logged_at DESC, id DESC
+    ),
+    domain_events AS (
+      SELECT * FROM latest_state WHERE event_type !~ '_deleted$'
+      UNION ALL
+      SELECT * FROM domain_events
+      WHERE user_id = ${userId}
+        AND event_type !~ '_(created|updated|deleted)$'
+        ${exclude}
+    )
+  `;
+}
+
 // ── Aggregate execution ──────────────────────────────────────────────────
 
 /** Runs one aggregation over one date range, for one user, with the
  * query's filters applied -- the only place that actually issues a SQL
- * query in this module. `excludeEventId`, when set, excludes that one
+ * query in this module. Reads through currentStateCte's deduplicated
+ * view, never the raw domain_events table directly (see that function's
+ * own comment for why). `excludeEventId`, when set, excludes that one
  * domain_events row -- used for the event-triggered "before" evaluation
  * (goals-evaluation.ts), which must compute what the aggregate would
  * have been without the just-inserted event. */
@@ -316,37 +374,29 @@ export async function computeAggregateForRange(
     lt(domainEvents.occurredAt, range.to),
     ...query.filters.map(buildFilterCondition),
   ];
-  if (excludeEventId !== undefined) conditions.push(ne(domainEvents.id, excludeEventId));
-  const where = and(...conditions);
+  const where = and(...conditions)!;
+  const cte = currentStateCte(userId, excludeEventId);
 
+  let selectExpr: SQL<string>;
   if (query.aggregation === "count") {
-    const [row] = await db.select({ v: sql<string>`count(*)` }).from(domainEvents).where(where);
-    return Number(row?.v ?? 0);
+    selectExpr = sql`count(*)`;
+  } else if (query.aggregation === "sum") {
+    selectExpr = sql`coalesce(sum(${domainEvents.amount}), 0)`;
+  } else if (query.aggregation === "mean") {
+    selectExpr = sql`coalesce(avg(${domainEvents.amount}), 0)`;
+  } else if (query.aggregation === "min") {
+    selectExpr = sql`coalesce(min(${domainEvents.amount}), 0)`;
+  } else if (query.aggregation === "max") {
+    selectExpr = sql`coalesce(max(${domainEvents.amount}), 0)`;
+  } else {
+    // median | percentile -- Postgres's percentile_cont(fraction) WITHIN
+    // GROUP, fraction always a bound parameter, never string-built.
+    const fraction = query.aggregation === "median" ? 0.5 : query.percentile! / 100;
+    selectExpr = sql`coalesce(percentile_cont(${fraction}) within group (order by ${domainEvents.amount}), 0)`;
   }
-  if (query.aggregation === "sum") {
-    const [row] = await db.select({ v: sql<string>`coalesce(sum(${domainEvents.amount}), 0)` }).from(domainEvents).where(where);
-    return Number(row?.v ?? 0);
-  }
-  if (query.aggregation === "mean") {
-    const [row] = await db.select({ v: sql<string>`coalesce(avg(${domainEvents.amount}), 0)` }).from(domainEvents).where(where);
-    return Number(row?.v ?? 0);
-  }
-  if (query.aggregation === "min") {
-    const [row] = await db.select({ v: sql<string>`coalesce(min(${domainEvents.amount}), 0)` }).from(domainEvents).where(where);
-    return Number(row?.v ?? 0);
-  }
-  if (query.aggregation === "max") {
-    const [row] = await db.select({ v: sql<string>`coalesce(max(${domainEvents.amount}), 0)` }).from(domainEvents).where(where);
-    return Number(row?.v ?? 0);
-  }
-  // median | percentile -- Postgres's percentile_cont(fraction) WITHIN GROUP,
-  // fraction always a bound parameter, never string-built.
-  const fraction = query.aggregation === "median" ? 0.5 : query.percentile! / 100;
-  const [row] = await db
-    .select({ v: sql<string>`coalesce(percentile_cont(${fraction}) within group (order by ${domainEvents.amount}), 0)` })
-    .from(domainEvents)
-    .where(where);
-  return Number(row?.v ?? 0);
+
+  const result = await db.execute<{ v: string }>(sql`WITH ${cte} SELECT ${selectExpr} AS v FROM domain_events WHERE ${where}`);
+  return Number(result.rows[0]?.v ?? 0);
 }
 
 export interface EvaluatedQuery {
@@ -382,8 +432,26 @@ export async function evaluateGoalQuery(
  * eq/in filters on category/event_type/owner_type can rule a goal OUT;
  * every other filter shape (amount, metadata.*, ne, gt/gte/lt/lte,
  * contains) can't be cheaply pre-checked without querying, so a goal
- * with any such filter is always treated as a possible match. */
-export function couldMatchEvent(query: GoalQuery, event: { category: string | null; eventType: string; ownerType: string }): boolean {
+ * with any such filter is always treated as a possible match.
+ *
+ * `action === "updated"` disables the category/owner_type short-circuit
+ * entirely (falls through to a possible match unconditionally) -- an
+ * update event only carries the entity's NEW state, and moving a
+ * transaction OUT of a filtered category is exactly as goal-relevant as
+ * moving one IN, but the event's own fields can't tell those apart from
+ * "never matched at all" without knowing the PRIOR state, which this
+ * cheap check deliberately doesn't query for. Confirmed live 2026-09-19:
+ * recategorizing a transaction away from a goal's filtered category
+ * never re-evaluated that goal, so a goal_exceeded state could never
+ * clear back to goal_met once the offending transaction was corrected.
+ * `created`/`deleted` don't have this ambiguity -- a newly-created row's
+ * only state IS its current fields (nothing to have "moved away" from),
+ * and a deleted row's event carries its final state right before removal
+ * (the same directional case as created, not a from/to change) -- so the
+ * short-circuit stays safe, and worth keeping, for those two actions. */
+export function couldMatchEvent(query: GoalQuery, event: { category: string | null; eventType: string; ownerType: string; action: string }): boolean {
+  if (event.action === "updated") return true;
+
   const fieldValue: Record<DirectFilterField, string | null> = {
     category: event.category,
     event_type: event.eventType,

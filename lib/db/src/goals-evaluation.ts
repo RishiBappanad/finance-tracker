@@ -190,7 +190,7 @@ export async function evaluateGoalTransition(db: Database, goal: Goal, triggerin
  */
 export async function evaluateGoalsForEvent(
   db: Database,
-  event: { id: number; userId: number; category: string | null; eventType: string; ownerType: string }
+  event: { id: number; userId: number; category: string | null; eventType: string; ownerType: string; action: string }
 ): Promise<void> {
   const activeGoals = await db.select().from(goals).where(and(eq(goals.userId, event.userId), eq(goals.isActive, true)));
 

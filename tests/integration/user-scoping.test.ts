@@ -61,6 +61,17 @@ vi.mock("@workspace/db", () => ({
   // mock, so it needs the same two stand-ins directly.
   joinTransactionOwnership: (qb: any) => qb.innerJoin().innerJoin(),
   ownedByUser: (userId: number) => ({ __mockCondition: "ownedByUser", userId }),
+  // Mock for lib/db/src/domain-events.ts's logDomainEvent() -- same
+  // no-op reasoning as db-mock.ts's own version (routes call this as a
+  // fire-and-forget side effect; a real implementation would touch the
+  // mock queue meant for the route's own next query). Missing here until
+  // 2026-09-20: this file's inline mock predates categories.ts (and
+  // other routes) being instrumented for the Event Contract, so every
+  // route that started calling logDomainEvent() after this mock was
+  // written 500'd with "No logDomainEvent export is defined on the
+  // @workspace/db mock" the moment it was actually exercised -- caught
+  // via POST /api/categories's own test, silently failing until now.
+  logDomainEvent: async () => {},
 }));
 
 import app from "../../artifacts/api-server/src/app.js";

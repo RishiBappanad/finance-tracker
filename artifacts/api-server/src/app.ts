@@ -50,4 +50,27 @@ if (process.env.NODE_ENV === "production") {
   });
 }
 
+// Catch-all error handler (4-arg signature is what makes Express treat this
+// as one -- must be registered last). Without this, an unhandled route
+// error (Express 5 auto-catches a rejected async handler and forwards it
+// here) fell through to Express's own default handler: an HTML error page,
+// AND -- since pino-http's request logger only logs completed requests,
+// never a thrown error's own message/stack -- nothing about the actual
+// failure ever reached any log. Confirmed real: POST /api/categories's own
+// mock-suite test failed with a bare "500", zero diagnostic info, until a
+// throwaway console.log was hand-added to the test itself to print the
+// response body (2026-09-20) -- the real error (a mock missing an export)
+// was sitting right there the whole time, just never surfaced anywhere.
+// console.error here is deliberate, not logger.error(pino) -- this app's
+// test config sets LOG_LEVEL=silent for clean test output, which pino
+// respects for every level including 'error'; a thrown error is exactly
+// the kind of information that must never be silenced regardless of the
+// configured log verbosity, and console.error always writes to stderr
+// regardless of any logger's own level setting.
+app.use((err: Error, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error(`[unhandled error] ${req.method} ${req.path}:`, err);
+  if (res.headersSent) return;
+  res.status(500).json({ error: "Internal server error" });
+});
+
 export default app;

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import request from "supertest";
 import jwt from "jsonwebtoken";
-import { db, users, institutions, accounts, bankTransactions } from "@workspace/db";
+import { db, users, institutions, accounts, bankTransactions, logDomainEvent } from "@workspace/db";
 import { eq } from "drizzle-orm";
 
 // Live-database test for the Universal Event Contract adapter
@@ -65,6 +65,26 @@ beforeAll(async () => {
       categoryPrimary: "Food and Drink", date: "2026-09-08", source: "plaid", sourceId: plaidTxnB,
     },
   ]);
+  // GET /events reads domain_events, not bank_transactions directly, as
+  // of the 2026-09-15 CRUD rework (routes/events.ts's own top comment) --
+  // the raw insert above alone produces no domain_events row, so without
+  // this, every assertion below expecting to find these two transactions
+  // via GET /events or GET /aggregations silently sees nothing. Mirrors
+  // exactly what routes/transactions.ts's real /sync route logs for a
+  // newly-added Plaid transaction. Stale until 2026-09-20 -- this file's
+  // setup predates the rework and was never updated for it.
+  await logDomainEvent(db, {
+    userId: userA.id, ownerType: "transaction", ownerId: plaidTxnA, action: "created",
+    category: "Food and Drink", amount: 25, label: "Events Live Coffee A",
+    source: "plaid", sourceId: plaidTxnA, occurredAt: new Date("2026-09-08"),
+    metadata: { merchantName: "Events Live Coffee A", pending: false, ignored: false },
+  });
+  await logDomainEvent(db, {
+    userId: userB.id, ownerType: "transaction", ownerId: plaidTxnB, action: "created",
+    category: "Food and Drink", amount: 30, label: "Events Live Coffee B",
+    source: "plaid", sourceId: plaidTxnB, occurredAt: new Date("2026-09-08"),
+    metadata: { merchantName: "Events Live Coffee B", pending: false, ignored: false },
+  });
 }, 30_000);
 
 afterAll(async () => {
@@ -147,19 +167,31 @@ describe("GET /events cross-user isolation and shape", () => {
   it("only returns the caller's own events, including pre-existing Plaid-synced ones", async () => {
     const res = await request(app).get("/api/events?start=2026-09-01&end=2026-09-30").set(headersA);
     expect(res.status).toBe(200);
-    const ids = res.body.events.map((e: any) => e.id);
-    expect(ids).toContain(plaidTxnA);
-    expect(ids).not.toContain(plaidTxnB);
+    // `id` is domain_events' own row id as of the 2026-09-15 CRUD rework
+    // (routes/events.ts's rowToEvent), not the owning transaction's id --
+    // source_id is what still carries the transaction's original id
+    // through unchanged, and is what this fixture actually needs to
+    // identify "the plaidTxnA event" by. Stale until 2026-09-20 (checked
+    // `id` directly, which predates that rework).
+    const sourceIds = res.body.events.map((e: any) => e.source_id);
+    expect(sourceIds).toContain(plaidTxnA);
+    expect(sourceIds).not.toContain(plaidTxnB);
   });
 
   it("returns the Core Event Shape with finance's real field mappings", async () => {
     const res = await request(app).get("/api/events?start=2026-09-01&end=2026-09-30").set(headersA);
-    const event = res.body.events.find((e: any) => e.id === plaidTxnA);
+    const event = res.body.events.find((e: any) => e.source_id === plaidTxnA);
     expect(event).toMatchObject({
       user_id: userA.id,
-      event_type: "transaction",
+      // eventType is `${ownerType}_${action}` (logDomainEvent, domain-
+      // events.ts) as of the CRUD rework -- was a bare "transaction"
+      // before it. Stale until 2026-09-20.
+      event_type: "transaction_created",
       category: "Food and Drink", // categoryPrimary, no userCategory override on this fixture row
-      occurred_at: "2026-09-08",
+      // occurred_at is a real timestamptz (ISO string), not a bare date --
+      // this file's own beforeAll passes occurredAt: new Date("2026-09-08"),
+      // which serializes with a time component.
+      occurred_at: "2026-09-08T00:00:00.000Z",
       amount: 25,
       source: "plaid",
       source_id: plaidTxnA,
@@ -171,15 +203,22 @@ describe("GET /events cross-user isolation and shape", () => {
     expect(event.metadata.pending).toBe(false);
   });
 
-  it("rejects an unknown event_type filter", async () => {
+  it("an unknown event_type filter matches nothing, rather than erroring", async () => {
+    // Deliberate, documented behavior as of the CRUD rework (routes/
+    // events.ts's own comment on this route): every event_type value now
+    // lives in one shared domain_events table with no fixed whitelist, so
+    // an unrecognized filter value is just a WHERE clause matching zero
+    // rows, not a 400 -- matches nutrition-insights' identical behavior.
+    // This test previously expected 400, stale from before that rework.
     const res = await request(app).get("/api/events?start=2026-09-01&end=2026-09-30&event_type=not_real").set(headersA);
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(200);
+    expect(res.body.events).toHaveLength(0);
   });
 
   it("source filter only returns matching-source events", async () => {
     const res = await request(app).get("/api/events?start=2026-09-01&end=2026-09-30&source=plaid").set(headersA);
-    const ids = res.body.events.map((e: any) => e.id);
-    expect(ids).toContain(plaidTxnA);
+    const sourceIds = res.body.events.map((e: any) => e.source_id);
+    expect(sourceIds).toContain(plaidTxnA);
     // The manual entries logged in the POST /events/log tests above have source="manual".
     const allManual = res.body.events.filter((e: any) => e.source === "manual");
     expect(allManual).toHaveLength(0);
