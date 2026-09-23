@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, type ReactNode } from "react";
-import { useTrackStackAuth } from "trackstack-ui";
+import { useTrackStackAuth, redirectToLogin } from "trackstack-ui";
 import { API_BASE } from "@/lib/api";
 import { setAuthTokenGetter } from "@workspace/api-client-react";
 
@@ -95,9 +95,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(account);
   };
 
+  // No `returnTo` here, deliberately -- an explicit logout means the user
+  // chose to leave this app, so they should land on Home itself to
+  // decide where to go next, not get immediately bounced right back to
+  // the page they just logged out of.
   const logout = () => {
     auth.logout();
     setUser(null);
+    redirectToLogin(TRACKSTACK_AUTH_URL);
   };
 
   return (
