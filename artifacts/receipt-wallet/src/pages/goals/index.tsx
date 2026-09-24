@@ -68,6 +68,9 @@ interface GoalQuery {
   percentile?: number;
   filters: FilterCondition[];
   timeWindow: TimeWindow;
+  // Multiplier on the evaluated value. On a reference_query it makes the goal a
+  // ratio against another category: dining <= 0.3 x income.
+  scale?: number;
 }
 
 interface Goal {
@@ -80,6 +83,7 @@ interface Goal {
   measure_query: GoalQuery;
   reference_amount: number | null;
   reference_query: GoalQuery | null;
+  reference_scale?: number | null;
   inflation_adjusted: boolean;
   notify_on_crossing: boolean;
 }
@@ -146,12 +150,26 @@ function formatMoney(n: number): string {
   return `$${n.toFixed(2)}`;
 }
 
+// "a computed baseline" for a trend on the same categories; "0.3 × Income" when
+// the goal is compared against a computation on OTHER categories, or scaled.
+function referenceText(goal: Goal): string {
+  const scale = goal.reference_scale ?? 1;
+  const measureCat = categoryFromQuery(goal.measure_query);
+  const refCat = categoryFromQuery(goal.reference_query);
+  if (refCat !== measureCat || scale !== 1) {
+    return `${scale === 1 ? "" : `${scale} × `}${refCat ?? "every category"}`;
+  }
+  return "a computed baseline";
+}
+
 function goalSubtitle(goal: Goal): string {
   const period = goal.measure_query.timeWindow.period;
   if (goal.reference_query) {
     const ref = goal.reference_query;
     const baselineDesc =
-      ref.timeWindow.kind === "trailing"
+      ref.timeWindow.kind === "current_period"
+        ? `this same ${periodLabel(ref.timeWindow.period)}`
+        : ref.timeWindow.kind === "trailing"
         ? `trailing ${ref.timeWindow.count}-${periodLabel(ref.timeWindow.period)} ${ref.aggregation}`
         : ref.timeWindow.kind === "same_period_last_year"
         ? `same ${periodLabel(ref.timeWindow.period)} ${ref.timeWindow.count === 1 ? "last year" : `${ref.timeWindow.count} years back`}`
@@ -218,7 +236,7 @@ function GoalCard({ goal, status, onDelete }: { goal: Goal; status: GoalStatus |
 
       <p className="text-xs text-muted-foreground mt-3">
         {comparatorLabel(goal.comparator, goal.tolerance_percent)}{" "}
-        {goal.reference_query ? "a computed baseline" : formatMoney(goal.reference_amount ?? 0)} —{" "}
+        {goal.reference_query ? referenceText(goal) : formatMoney(goal.reference_amount ?? 0)} —{" "}
         {goalSubtitle(goal)}
       </p>
 
@@ -272,7 +290,7 @@ const AGGREGATIONS: { value: Aggregation; label: string }[] = [
   { value: "percentile", label: "Percentile" },
 ];
 
-type BaselineKind = "trailing" | "same_period_last_year" | "all_time" | "fixed_range";
+type BaselineKind = "current_period" | "trailing" | "same_period_last_year" | "all_time" | "fixed_range";
 
 interface AdvancedFormState {
   // Independent category sets for each side of the comparison -- e.g.
@@ -294,6 +312,9 @@ interface AdvancedFormState {
   refAggregation: Aggregation;
   refPercentile: number;
   baselineKind: BaselineKind;
+  // Multiplier on the baseline. 1 = compare against it as-is; 0.3 with a
+  // different baseline category = "no more than 30% of that category".
+  scale: number;
   trailingCount: number;
   yearsBackCount: number;
   fixedStart: string;
@@ -318,6 +339,7 @@ function defaultAdvancedForm(): AdvancedFormState {
     refAggregation: "mean",
     refPercentile: 95,
     baselineKind: "trailing",
+    scale: 1,
     trailingCount: 3,
     yearsBackCount: 1,
     fixedStart: "",
@@ -331,6 +353,8 @@ function defaultAdvancedForm(): AdvancedFormState {
 
 function buildReferenceTimeWindow(form: AdvancedFormState): TimeWindow {
   switch (form.baselineKind) {
+    case "current_period":
+      return { kind: "current_period", period: form.period };
     case "trailing":
       return { kind: "trailing", period: form.period, count: form.trailingCount };
     case "same_period_last_year":
@@ -383,6 +407,7 @@ function buildAdvancedPayload(form: AdvancedFormState) {
     ...(form.refAggregation === "percentile" ? { percentile: form.refPercentile } : {}),
     filters: categoryFilters(form.referenceCategories),
     timeWindow: buildReferenceTimeWindow(form),
+    ...(form.scale !== 1 ? { scale: form.scale } : {}),
   };
   return { ...base, reference_query, reference_amount: null, inflation_adjusted: form.inflationAdjusted };
 }
@@ -409,6 +434,7 @@ function applyPresetToAdvancedForm(preset: Preset, category: string): AdvancedFo
     if (preset.reference_query.percentile !== undefined) form.refPercentile = preset.reference_query.percentile;
     const tw = preset.reference_query.timeWindow;
     form.baselineKind = tw.kind as BaselineKind;
+    form.scale = preset.reference_query.scale ?? 1;
     if (tw.count !== undefined) {
       if (tw.kind === "trailing") form.trailingCount = tw.count;
       if (tw.kind === "same_period_last_year") form.yearsBackCount = tw.count;
@@ -815,6 +841,7 @@ function CreateGoalDialog({ open, onOpenChange, categories, onCreated }: CreateG
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
+                          <SelectItem value="current_period">This same period</SelectItem>
                           <SelectItem value="trailing">Trailing periods</SelectItem>
                           <SelectItem value="same_period_last_year">Same period, years back</SelectItem>
                           <SelectItem value="all_time">All time</SelectItem>
@@ -822,6 +849,27 @@ function CreateGoalDialog({ open, onOpenChange, categories, onCreated }: CreateG
                         </SelectContent>
                       </Select>
                     </div>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">
+                      Multiplier{" "}
+                      <span className="text-muted-foreground font-normal">
+                        (0.3 = "at most 30% of" the baseline — pair with different baseline categories for a ratio)
+                      </span>
+                    </Label>
+                    <Input
+                      type="number"
+                      min={0}
+                      step="any"
+                      value={advanced.scale}
+                      onChange={(e) => setAdvanced({ ...advanced, scale: Number(e.target.value) })}
+                    />
+                    {advanced.scale !== 1 && advanced.scale > 0 && (
+                      <p className="text-xs text-muted-foreground">
+                        {advanced.measureCategories.join(" + ") || "Every category"} {comparatorLabel(advanced.comparator, advanced.tolerancePercent)}{" "}
+                        {advanced.scale} × {advanced.referenceCategories.join(" + ") || "every category"}
+                      </p>
+                    )}
                   </div>
                   {advanced.refAggregation === "percentile" && (
                     <div className="space-y-1.5">

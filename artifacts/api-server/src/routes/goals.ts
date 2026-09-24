@@ -53,6 +53,7 @@ function expandShorthand(input: ShorthandInput): { measureQuery: GoalQuery; refe
 function validateFullForm(body: Record<string, unknown>): string | null {
   const measureQuery = parseGoalQuery(body.measure_query);
   if (typeof measureQuery === "string") return `measure_query: ${measureQuery}`;
+  if (measureQuery.scale !== undefined) return "scale belongs on reference_query (it's the multiplier on what you compare against)";
 
   const hasAmount = typeof body.reference_amount === "number";
   const hasQuery = body.reference_query !== undefined && body.reference_query !== null;
@@ -77,6 +78,9 @@ function serializeGoal(g: Goal) {
     measure_query: g.measureQuery,
     reference_amount: g.referenceAmount,
     reference_query: g.referenceQuery,
+    // The multiplier on a computed reference (the ratio); null when the goal
+    // has no computed reference.
+    reference_scale: g.referenceQuery === null ? null : ((g.referenceQuery as GoalQuery).scale ?? 1),
     inflation_adjusted: g.inflationAdjusted,
     notify_on_crossing: g.notifyOnCrossing,
     created_at: g.createdAt.toISOString(),
@@ -174,7 +178,23 @@ router.patch("/:id", async (req, res) => {
   if (body.inflation_adjusted !== undefined) updates.inflationAdjusted = Boolean(body.inflation_adjusted);
   if (body.notify_on_crossing !== undefined) updates.notifyOnCrossing = Boolean(body.notify_on_crossing);
 
+  // Edit just the ratio's multiplier, leaving the query alone.
+  let scaleOnlyEdit = false;
+  if (body.reference_scale !== undefined) {
+    if (typeof body.reference_scale !== "number" || !Number.isFinite(body.reference_scale) || body.reference_scale <= 0) {
+      return void res.status(400).json({ error: "reference_scale must be a positive number" });
+    }
+    scaleOnlyEdit = true;
+  }
+
   const hasQueryEdit = body.measure_query !== undefined || body.reference_amount !== undefined || body.reference_query !== undefined || body.category !== undefined || body.target_amount !== undefined || body.period !== undefined;
+  if (scaleOnlyEdit && !hasQueryEdit) {
+    const current = await loadOwnedGoal(req.user!.userId, id);
+    if (!current) return void res.status(404).json({ error: "Goal not found" });
+    if (current.referenceQuery === null) return void res.status(400).json({ error: "reference_scale only applies to a goal compared against a computed value" });
+    const { scale: _drop, ...rest } = current.referenceQuery as GoalQuery;
+    updates.referenceQuery = body.reference_scale === 1 ? rest : { ...rest, scale: body.reference_scale as number };
+  }
   if (hasQueryEdit) {
     const parsed = parseGoalInput(body);
     if (typeof parsed === "string") return void res.status(400).json({ error: parsed });

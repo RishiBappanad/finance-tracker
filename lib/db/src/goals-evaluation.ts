@@ -196,7 +196,14 @@ export async function evaluateGoalsForEvent(
 
   for (const goal of activeGoals) {
     const measureQuery = parseStoredQuery(goal.measureQuery, "measure_query");
-    if (!couldMatchEvent(measureQuery, event)) continue;
+    let matches = couldMatchEvent(measureQuery, event);
+    if (!matches && goal.referenceQuery !== null) {
+      // A goal compared against a computation on ANOTHER category (dining vs.
+      // income) flips when either side moves, so an event that only touches
+      // the reference side still needs the transition check.
+      matches = couldMatchEvent(parseStoredQuery(goal.referenceQuery, "reference_query"), event);
+    }
+    if (!matches) continue;
     await evaluateGoalTransition(db, goal, event.id);
   }
 }

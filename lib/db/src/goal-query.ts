@@ -62,6 +62,13 @@ export interface GoalQuery {
   percentile?: number; // required iff aggregation === 'percentile', 0-100
   filters: FilterCondition[];
   timeWindow: TimeWindow;
+  /** A multiplier applied to the evaluated value (absent = 1). On a goal's
+   * reference_query it turns "compare against another measure" into a
+   * ratio: `dining <= scale x income` is dining/income <= scale, e.g. 0.3
+   * for "no more than 30% of what I earn". Additive to the cross-tracker
+   * Goal Query (nutrition-insights' copy carries it too); a scale of exactly
+   * 1 is normalized away so equal goals have equal stored shapes. */
+  scale?: number;
 }
 
 // ── Validation ───────────────────────────────────────────────────────────
@@ -145,12 +152,17 @@ export function parseGoalQuery(value: unknown): GoalQuery | string {
   const twErr = validateTimeWindow(q.timeWindow ?? (q as Record<string, unknown>).time_window);
   if (twErr) return twErr;
 
+  if (q.scale !== undefined && q.scale !== null) {
+    if (typeof q.scale !== "number" || !Number.isFinite(q.scale) || q.scale <= 0) return "scale must be a positive number";
+  }
+
   const timeWindow = (q.timeWindow ?? (q as Record<string, unknown>).time_window) as TimeWindow;
   return {
     aggregation: q.aggregation,
     ...(q.aggregation === "percentile" ? { percentile: q.percentile as number } : {}),
     filters: q.filters as FilterCondition[],
     timeWindow,
+    ...(typeof q.scale === "number" && q.scale !== 1 ? { scale: q.scale } : {}),
   };
 }
 
@@ -420,7 +432,8 @@ export async function evaluateGoalQuery(
   const now = options.now ?? new Date();
   const ranges = resolveTimeWindow(query.timeWindow, now);
   const perRangeValues = await Promise.all(ranges.map((range) => computeAggregateForRange(db, userId, query, range, options.excludeEventId)));
-  const value = perRangeValues.reduce((sum, v) => sum + v, 0) / perRangeValues.length;
+  const averaged = perRangeValues.reduce((sum, v) => sum + v, 0) / perRangeValues.length;
+  const value = averaged * (query.scale ?? 1);
   return { value: Math.round(value * 100) / 100, ranges };
 }
 

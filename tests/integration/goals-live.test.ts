@@ -407,6 +407,81 @@ describe("advanced: reference_query (rolling trailing average)", () => {
   });
 });
 
+describe("advanced: reference_query on ANOTHER category, times a multiplier (a ratio)", () => {
+  const dailyOf = (category: string, extra: Record<string, unknown> = {}) => ({
+    aggregation: "sum",
+    filters: [{ field: "category", operator: "eq", value: category }],
+    timeWindow: { kind: "current_period", period: "daily" },
+    ...extra,
+  });
+
+  it("caps one category at a share of another: dining <= 0.3 x income", async () => {
+    const dining = `Goals Live Ratio Dining ${RUN}`;
+    const income = `Goals Live Ratio Income ${RUN}`;
+    const created = await createGoal(headers, { comparator: "lte", measure_query: dailyOf(dining), reference_query: dailyOf(income, { scale: 0.3 }) });
+    expect(created.status).toBe(201);
+    expect(created.body.reference_scale).toBe(0.3);
+
+    await logTransaction(income, 1000); // 30% of 1000 = 300 allowed
+    await logTransaction(dining, 250);
+    const ok = await request(app).get(`/api/goals/${created.body.id}/status`).set(headers);
+    expect(ok.body).toMatchObject({ measure_value: 250, reference_value: 300, on_track: true });
+
+    await logTransaction(dining, 100); // 350 > 300
+    const over = await request(app).get(`/api/goals/${created.body.id}/status`).set(headers);
+    expect(over.body).toMatchObject({ measure_value: 350, reference_value: 300, on_track: false });
+  });
+
+  it("re-evaluates when only the REFERENCE side moves (an income event flips a dining goal)", async () => {
+    const dining = `Goals Live Ratio Flip Dining ${RUN}`;
+    const income = `Goals Live Ratio Flip Income ${RUN}`;
+    const created = await createGoal(headers, { comparator: "lte", measure_query: dailyOf(dining), reference_query: dailyOf(income, { scale: 0.5 }) });
+    const goalId = created.body.id;
+
+    await logTransaction(dining, 100); // 100 > 0.5 x 0 -- already over, nothing to cross yet
+    await logTransaction(income, 400); // allowance 200: dining is now compliant -- a crossing caused by the income event alone
+    expect(await eventCount(goalId, "goal_met")).toHaveLength(1);
+  });
+
+  it("rejects a non-positive or non-numeric scale, and a scale on the measure side", async () => {
+    const category = `Goals Live Ratio Bad ${RUN}`;
+    for (const bad of [0, -1, "2"]) {
+      const res = await createGoal(headers, { comparator: "lte", measure_query: dailyOf(category), reference_query: dailyOf(category, { scale: bad }) });
+      expect(res.status).toBe(400);
+    }
+    const onMeasure = await createGoal(headers, { comparator: "lte", measure_query: dailyOf(category, { scale: 2 }), reference_amount: 5 });
+    expect(onMeasure.status).toBe(400);
+  });
+
+  it("edits just the multiplier via reference_scale, and refuses it on a fixed-amount goal", async () => {
+    const dining = `Goals Live Ratio Edit Dining ${RUN}`;
+    const income = `Goals Live Ratio Edit Income ${RUN}`;
+    const ratio = await createGoal(headers, { comparator: "lte", measure_query: dailyOf(dining), reference_query: dailyOf(income, { scale: 0.3 }) });
+    const edited = await request(app).patch(`/api/goals/${ratio.body.id}`).set(headers).send({ reference_scale: 0.4 });
+    expect(edited.status).toBe(200);
+    expect(edited.body.reference_scale).toBe(0.4);
+    expect(edited.body.reference_query.filters).toEqual([{ field: "category", operator: "eq", value: income }]);
+
+    const back = await request(app).patch(`/api/goals/${ratio.body.id}`).set(headers).send({ reference_scale: 1 });
+    expect(back.body.reference_scale).toBe(1);
+    expect("scale" in back.body.reference_query).toBe(false);
+
+    expect((await request(app).patch(`/api/goals/${ratio.body.id}`).set(headers).send({ reference_scale: 0 })).status).toBe(400);
+
+    const fixed = await createGoal(headers, { category: `Goals Live Ratio Fixed ${RUN}`, comparator: "lte", target_amount: 10, period: "daily" });
+    expect((await request(app).patch(`/api/goals/${fixed.body.id}`).set(headers).send({ reference_scale: 2 })).status).toBe(400);
+    expect(fixed.body.reference_scale).toBeNull();
+  });
+
+  it("the 'this same period' baseline works for a same-period ratio (current_period reference)", async () => {
+    const dining = `Goals Live Ratio Same Dining ${RUN}`;
+    const income = `Goals Live Ratio Same Income ${RUN}`;
+    const created = await createGoal(headers, { comparator: "lte", measure_query: dailyOf(dining), reference_query: dailyOf(income, { scale: 1 }) });
+    expect(created.body.reference_scale).toBe(1); // scale 1 is normalized away, reported as 1
+    expect("scale" in created.body.reference_query).toBe(false);
+  });
+});
+
 describe("GET /goals/presets", () => {
   it("returns both basic and advanced tiers", async () => {
     const res = await request(app).get("/api/goals/presets").set(headers);
