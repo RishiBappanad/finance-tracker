@@ -225,6 +225,122 @@ describe("GET /events cross-user isolation and shape", () => {
   });
 });
 
+// Read-side extensions from contracts/EVENT_CONTRACT_SPEC.md: view=current,
+// owner_type, GET /context, and aggregations over current state.
+describe("GET /events?view=current", () => {
+  const editedTxn = `test-${RUN}-events-edited`;
+  const deletedTxn = `test-${RUN}-events-deleted`;
+
+  beforeAll(async () => {
+    // One transaction created then recategorized + moved to a new date, and
+    // one created then deleted -- the two cases the raw log gets wrong.
+    await logDomainEvent(db, {
+      userId: userA.id, ownerType: "transaction", ownerId: editedTxn, action: "created",
+      category: "Shopping", amount: 40, label: "Edited Store", source: "manual",
+      sourceId: editedTxn, occurredAt: new Date("2026-08-05"),
+    });
+    await logDomainEvent(db, {
+      userId: userA.id, ownerType: "transaction", ownerId: editedTxn, action: "updated",
+      category: "Groceries", amount: 40, label: "Edited Store", source: "manual",
+      sourceId: editedTxn, occurredAt: new Date("2026-09-10"),
+    });
+    await logDomainEvent(db, {
+      userId: userA.id, ownerType: "transaction", ownerId: deletedTxn, action: "created",
+      category: "Shopping", amount: 99, label: "Deleted Store", source: "manual",
+      sourceId: deletedTxn, occurredAt: new Date("2026-09-10"),
+    });
+    await logDomainEvent(db, {
+      userId: userA.id, ownerType: "transaction", ownerId: deletedTxn, action: "deleted",
+      category: "Shopping", amount: 99, label: "Deleted Store", source: "manual",
+      sourceId: deletedTxn, occurredAt: new Date("2026-09-10"),
+    });
+  });
+
+  it("every event carries owner_type and owner_id", async () => {
+    const res = await request(app).get("/api/events?start=2026-09-01&end=2026-09-30").set(headersA);
+    const event = res.body.events.find((e: any) => e.source_id === plaidTxnA);
+    expect(event).toMatchObject({ owner_type: "transaction", owner_id: plaidTxnA });
+  });
+
+  it("the raw log (default view) still shows every row for an edited entity", async () => {
+    const res = await request(app).get("/api/events?start=2026-08-01&end=2026-09-30").set(headersA);
+    const rows = res.body.events.filter((e: any) => e.owner_id === editedTxn);
+    expect(rows.map((e: any) => e.event_type).sort()).toEqual(["transaction_created", "transaction_updated"]);
+  });
+
+  it("collapses an edited entity to one row in its latest state", async () => {
+    const res = await request(app).get("/api/events?start=2026-08-01&end=2026-09-30&view=current").set(headersA);
+    expect(res.status).toBe(200);
+    const rows = res.body.events.filter((e: any) => e.owner_id === editedTxn);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ event_type: "transaction_updated", category: "Groceries" });
+  });
+
+  it("drops an entity whose latest row is a deletion", async () => {
+    const res = await request(app).get("/api/events?start=2026-08-01&end=2026-09-30&view=current").set(headersA);
+    expect(res.body.events.filter((e: any) => e.owner_id === deletedTxn)).toHaveLength(0);
+  });
+
+  it("applies the date range to the current state, not the original one", async () => {
+    // Created 2026-08-05 but backdated-then-moved to 2026-09-10: found in
+    // September, absent from August.
+    const sep = await request(app).get("/api/events?start=2026-09-01&end=2026-09-30&view=current").set(headersA);
+    expect(sep.body.events.map((e: any) => e.owner_id)).toContain(editedTxn);
+    const aug = await request(app).get("/api/events?start=2026-08-01&end=2026-08-31&view=current").set(headersA);
+    expect(aug.body.events.map((e: any) => e.owner_id)).not.toContain(editedTxn);
+  });
+
+  it("does not leak another user's entities", async () => {
+    const res = await request(app).get("/api/events?start=2026-08-01&end=2026-09-30&view=current").set(headersB);
+    expect(res.body.events.map((e: any) => e.owner_id)).not.toContain(editedTxn);
+    expect(res.body.events.map((e: any) => e.owner_id)).not.toContain(plaidTxnA);
+  });
+
+  it("filters by owner_type", async () => {
+    const res = await request(app).get("/api/events?start=2026-08-01&end=2026-09-30&view=current&owner_type=receipt").set(headersA);
+    expect(res.status).toBe(200);
+    expect(res.body.events.every((e: any) => e.owner_type === "receipt")).toBe(true);
+  });
+
+  it("rejects event_type combined with view=current, and an unknown view", async () => {
+    const both = await request(app).get("/api/events?start=2026-09-01&end=2026-09-30&view=current&event_type=transaction_created").set(headersA);
+    expect(both.status).toBe(400);
+    const bad = await request(app).get("/api/events?start=2026-09-01&end=2026-09-30&view=bogus").set(headersA);
+    expect(bad.status).toBe(400);
+  });
+
+  it("aggregations count an edited transaction once, and not a deleted one", async () => {
+    const res = await request(app).get("/api/aggregations/by_category?start=2026-09-01&end=2026-09-30").set(headersA);
+    const groceries = res.body.data.find((d: any) => d.category === "Groceries");
+    expect(groceries.total_amount).toBe(40); // once, at the edited category
+    const shopping = res.body.data.find((d: any) => d.category === "Shopping");
+    expect(shopping).toBeUndefined(); // the deleted $99 and the pre-edit $40 are both gone
+  });
+});
+
+describe("GET /events/context", () => {
+  it("describes the tracker, marks receipts/items/matches non-summable, and includes the caller's custom categories only", async () => {
+    const res = await request(app).get("/api/events/context").set(headersA);
+    expect(res.status).toBe(200);
+    expect(res.body.tracker).toBe("finance");
+    expect(res.body.owner_types.transaction.amount.summable).toBe(true);
+    expect(res.body.owner_types.receipt.amount.summable).toBe(false);
+    expect(res.body.categories.map((c: any) => c.value)).toContain("Groceries");
+  });
+
+  it("renders markdown on request", async () => {
+    const res = await request(app).get("/api/events/context?format=markdown").set(headersA);
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toMatch(/text\/markdown/);
+    expect(res.text).toContain("# finance tracker");
+  });
+
+  it("requires auth", async () => {
+    const res = await request(app).get("/api/events/context");
+    expect(res.status).toBe(401);
+  });
+});
+
 describe("GET /aggregations/{aggType} cross-user isolation and correctness", () => {
   it("rejects an unknown aggType", async () => {
     const res = await request(app).get("/api/aggregations/not_a_real_type?start=2026-09-01&end=2026-09-30").set(headersA);
