@@ -19,13 +19,23 @@ import {
 } from "@/components/ui/select";
 import { MultiSelectFilter } from "@/components/multi-select-filter";
 import { TransactionRow, invalidateCategoriesCache, type TransactionData } from "@/components/transaction-row";
+import { DayNavigator, todayIso, weekBounds, friendlyDate } from "@/components/day-navigator";
 import { API_BASE, authFetch } from "@/lib/api";
 import { useListTransactions, useListAccounts, syncTransactions } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 
 type SortOption = "date-desc" | "date-asc" | "merchant-asc" | "merchant-desc";
+type ViewMode = "all" | "day";
 const PAGE_SIZE = 50;
+
+// The Daily view keeps its date in the URL (?date=YYYY-MM-DD), like
+// nutrition-insights' dashboard, so a reload or a shared link lands on the same
+// day. Read once for the initial state; kept in sync by an effect below.
+function initialDayFromUrl(): string | null {
+  const value = new URLSearchParams(window.location.search).get("date");
+  return value && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null;
+}
 
 export default function Transactions() {
   const [search, setSearch] = useState("");
@@ -36,6 +46,11 @@ export default function Transactions() {
   const [showHidden, setShowHidden] = useState(false);
   const [hiddenTxns, setHiddenTxns] = useState<TransactionData[]>([]);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+
+  // All transactions (the original list) or one day at a time
+  const [initialDay] = useState(initialDayFromUrl);
+  const [view, setView] = useState<ViewMode>(initialDay ? "day" : "all");
+  const [date, setDate] = useState(initialDay ?? todayIso());
 
   // Filters
   const [fromDate, setFromDate] = useState("");
@@ -50,11 +65,16 @@ export default function Transactions() {
   const [categories, setCategories] = useState<string[]>([]);
   const { data: accountsList } = useListAccounts();
 
+  // Daily view asks the API for the selected date's whole week (one request), so
+  // the week strip can show every day's spend and switching days inside the week
+  // needs no new fetch; the list itself is narrowed to the selected day below.
+  const week = useMemo(() => weekBounds(date), [date]);
   const { data: transactions, isLoading } = useListTransactions(
     {
       ...(search ? { search } : {}),
-      ...(fromDate ? { from: fromDate } : {}),
-      ...(toDate ? { to: toDate } : {}),
+      ...(view === "day"
+        ? { from: week.start, to: week.end }
+        : { ...(fromDate ? { from: fromDate } : {}), ...(toDate ? { to: toDate } : {}) }),
     }
   );
   const queryClient = useQueryClient();
@@ -83,11 +103,23 @@ export default function Transactions() {
     }
   }, [showHidden]);
 
+  // Keep ?date= in step with the Daily view (and drop it for the full list).
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (view === "day") url.searchParams.set("date", date);
+    else url.searchParams.delete("date");
+    window.history.replaceState(window.history.state, "", url);
+  }, [view, date]);
+
+  // Every category ticked is the same as none ticked -- no restriction --
+  // so "Select all" can't start hiding uncategorized transactions.
+  const restrictsCategories = filterCategories.length > 0 && !(categories.length > 0 && categories.every((c) => filterCategories.includes(c)));
+
   // Client-side filters + sort
-  const filtered = useMemo(() => {
+  const baseFiltered = useMemo(() => {
     let list = [...(transactions ?? [])];
 
-    if (filterCategories.length > 0) {
+    if (restrictsCategories) {
       list = list.filter((t: any) => filterCategories.includes(t.userCategory));
     }
     if (filterVendors.length > 0) {
@@ -125,7 +157,39 @@ export default function Transactions() {
     }
 
     return list;
-  }, [transactions, filterCategories, filterVendors, filterAccounts, sort]);
+  }, [transactions, restrictsCategories, filterCategories, filterVendors, filterAccounts, sort]);
+
+  // Daily view: the selected day's rows, its summary, and each week day's spend.
+  // Positive amounts are money out, negative are credits (the app-wide convention).
+  const filtered = useMemo(
+    () => (view === "day" ? baseFiltered.filter((t: any) => t.date === date) : baseFiltered),
+    [baseFiltered, view, date]
+  );
+
+  const weekSpend = useMemo(() => {
+    const totals: Record<string, number> = {};
+    if (view !== "day") return totals;
+    for (const t of baseFiltered as any[]) if (t.amount > 0) totals[t.date] = (totals[t.date] ?? 0) + t.amount;
+    return totals;
+  }, [baseFiltered, view]);
+
+  const daySummary = useMemo(() => {
+    if (view !== "day") return null;
+    let spent = 0;
+    let credits = 0;
+    const byCategory: Record<string, number> = {};
+    for (const t of filtered as any[]) {
+      if (t.amount > 0) {
+        spent += t.amount;
+        const key = t.userCategory || "Uncategorized";
+        byCategory[key] = (byCategory[key] ?? 0) + t.amount;
+      } else {
+        credits += -t.amount;
+      }
+    }
+    const top = Object.entries(byCategory).sort((a, b) => b[1] - a[1]).slice(0, 4);
+    return { spent, credits, count: filtered.length, top };
+  }, [filtered, view]);
 
   // Lazy loading — show more on scroll
   const visibleTransactions = useMemo(() => filtered.slice(0, visibleCount), [filtered, visibleCount]);
@@ -141,9 +205,9 @@ export default function Transactions() {
   // Reset visible count when filters change
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);
-  }, [search, fromDate, toDate, filterCategories, filterVendors, filterAccounts, sort]);
+  }, [search, fromDate, toDate, filterCategories, filterVendors, filterAccounts, sort, view, date]);
 
-  const hasActiveFilters = !!(fromDate || toDate || filterCategories.length || filterVendors.length || filterAccounts.length);
+  const hasActiveFilters = !!(fromDate || toDate || restrictsCategories || filterVendors.length || filterAccounts.length);
 
   const clearFilters = () => {
     setFromDate("");
@@ -257,6 +321,23 @@ export default function Transactions() {
 
         {/* Search + sort + filter toggle */}
         <Card className="p-4 border-none shadow-sm space-y-3">
+          <div className="flex items-center gap-1 p-1 bg-secondary/40 rounded-lg w-fit">
+            {([["all", "All transactions"], ["day", "Daily"]] as const).map(([mode, label]) => (
+              <button
+                key={mode}
+                type="button"
+                className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${
+                  view === mode ? "bg-background shadow-sm text-foreground" : "text-muted-foreground"
+                }`}
+                onClick={() => setView(mode)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {view === "day" && <DayNavigator date={date} onChange={setDate} weekSpend={weekSpend} />}
+
           <div className="flex flex-wrap gap-3">
             <div className="relative flex-1 min-w-[200px]">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -288,7 +369,7 @@ export default function Transactions() {
               Filters
               {hasActiveFilters && (
                 <span className="ml-1.5 h-4 w-4 rounded-full bg-primary text-primary-foreground text-[10px] flex items-center justify-center">
-                  {[fromDate, toDate, filterCategories.length, filterVendors.length, filterAccounts.length].filter(Boolean).length}
+                  {[fromDate, toDate, restrictsCategories, filterVendors.length, filterAccounts.length].filter(Boolean).length}
                 </span>
               )}
             </Button>
@@ -306,6 +387,7 @@ export default function Transactions() {
           {/* Expanded filter controls */}
           {showFilters && (
             <div className="flex flex-wrap gap-3 pt-2 border-t border-border">
+              {view === "all" && (<>
               <div className="flex items-center gap-2">
                 <label className="text-xs font-medium text-muted-foreground">From</label>
                 <Input
@@ -324,6 +406,7 @@ export default function Transactions() {
                   className="w-auto h-8 text-xs bg-secondary/30 border-transparent"
                 />
               </div>
+              </>)}
               <MultiSelectFilter
                 label="All categories"
                 options={categories}
@@ -354,6 +437,36 @@ export default function Transactions() {
             </div>
           )}
         </Card>
+
+        {daySummary && (
+          <Card className="p-4 border-none shadow-sm">
+            <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1">
+              <div>
+                <p className="text-xs text-muted-foreground">Spent</p>
+                <p className="text-xl font-semibold font-mono">${daySummary.spent.toFixed(2)}</p>
+              </div>
+              {daySummary.credits > 0 && (
+                <div>
+                  <p className="text-xs text-muted-foreground">Credits</p>
+                  <p className="text-xl font-semibold font-mono text-emerald-600">+${daySummary.credits.toFixed(2)}</p>
+                </div>
+              )}
+              <div>
+                <p className="text-xs text-muted-foreground">Transactions</p>
+                <p className="text-xl font-semibold font-mono">{daySummary.count}</p>
+              </div>
+              {daySummary.top.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 ml-auto">
+                  {daySummary.top.map(([category, total]) => (
+                    <span key={category} className="text-xs px-2 py-1 rounded-full bg-secondary/60">
+                      {category} <span className="font-mono text-muted-foreground">${total.toFixed(0)}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          </Card>
+        )}
       </div>
 
       {/* Hidden transactions panel */}
@@ -390,10 +503,14 @@ export default function Transactions() {
               <ArrowLeftRight className="h-6 w-6 text-muted-foreground" />
             </div>
             <h3 className="text-lg font-medium text-foreground">
-              {hasActiveFilters ? "No transactions match filters" : "No transactions synced"}
+              {view === "day"
+                ? `Nothing on ${friendlyDate(date)}`
+                : hasActiveFilters ? "No transactions match filters" : "No transactions synced"}
             </h3>
             <p className="text-muted-foreground text-sm mt-1 max-w-sm">
-              {hasActiveFilters
+              {view === "day"
+                ? hasActiveFilters ? "No transactions that day match your filters." : "No transactions were recorded that day. Use the arrows or the week strip to look at another day."
+                : hasActiveFilters
                 ? "Try adjusting your filters or clearing them."
                 : "Connect a bank account and click \"Sync Latest\" to import your transactions."}
             </p>
