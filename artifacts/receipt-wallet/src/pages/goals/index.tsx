@@ -371,17 +371,21 @@ function buildReferenceTimeWindow(form: AdvancedFormState): TimeWindow {
 // [..]-> an `in` filter -- "these categories combined" (a real request:
 //        e.g. Food & Dining + Groceries + Entertainment together capped
 //        at one amount, not three separate goals).
-function categoryFilters(categories: string[]): FilterCondition[] {
+function categoryFilters(categories: string[], allCategories: string[] = []): FilterCondition[] {
   if (categories.length === 0) return [];
+  // Ticking every category is "every category" -- no filter -- so the goal also
+  // covers categories created later and uncategorized transactions, rather than
+  // freezing today's list into an `in` filter.
+  if (allCategories.length > 0 && allCategories.every((c) => categories.includes(c))) return [];
   if (categories.length === 1) return [{ field: "category", operator: "eq", value: categories[0] }];
   return [{ field: "category", operator: "in", value: categories }];
 }
 
-function buildAdvancedPayload(form: AdvancedFormState) {
+function buildAdvancedPayload(form: AdvancedFormState, allCategories: string[] = []) {
   const measure_query: GoalQuery = {
     aggregation: form.measureAggregation,
     ...(form.measureAggregation === "percentile" ? { percentile: form.measurePercentile } : {}),
-    filters: categoryFilters(form.measureCategories),
+    filters: categoryFilters(form.measureCategories, allCategories),
     timeWindow: { kind: "current_period", period: form.period },
   };
 
@@ -405,7 +409,7 @@ function buildAdvancedPayload(form: AdvancedFormState) {
   const reference_query: GoalQuery = {
     aggregation: form.refAggregation,
     ...(form.refAggregation === "percentile" ? { percentile: form.refPercentile } : {}),
-    filters: categoryFilters(form.referenceCategories),
+    filters: categoryFilters(form.referenceCategories, allCategories),
     timeWindow: buildReferenceTimeWindow(form),
     ...(form.scale !== 1 ? { scale: form.scale } : {}),
   };
@@ -527,7 +531,7 @@ function CreateGoalDialog({ open, onOpenChange, categories, onCreated }: CreateG
       const res = await authFetch(`${API_BASE}/api/goals`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(buildAdvancedPayload(advanced)),
+        body: JSON.stringify(buildAdvancedPayload(advanced, categories)),
       });
       if (!res.ok) throw new Error();
       toast({ title: "Goal created" });

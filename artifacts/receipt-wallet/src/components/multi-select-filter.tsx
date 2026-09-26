@@ -14,6 +14,13 @@ interface MultiSelectFilterProps {
   className?: string;
 }
 
+/**
+ * The one multi-select used for every category/account/vendor picker in the app
+ * (Cash Flow, Spending, Transactions, Goals). "Select all" lives here so every
+ * one of those gets it: it selects everything currently listed (so with a search
+ * typed, just the matches -- handy for "all the Food ones"), "Clear all" empties
+ * the selection. An empty selection still means "no filter" to the callers.
+ */
 export function MultiSelectFilter({
   label,
   options,
@@ -27,6 +34,11 @@ export function MultiSelectFilter({
   const filtered = search
     ? options.filter((o) => o.toLowerCase().includes(search.toLowerCase()))
     : options;
+
+  const allSelected = options.length > 0 && options.every((o) => selected.includes(o));
+  const allListedSelected = filtered.length > 0 && filtered.every((o) => selected.includes(o));
+
+  const selectAllListed = () => onChange([...new Set([...selected, ...filtered])]);
 
   const toggle = (value: string) => {
     if (selected.includes(value)) {
@@ -46,6 +58,8 @@ export function MultiSelectFilter({
           <span className="truncate">
             {selected.length === 0
               ? label
+              : allSelected && options.length > 1
+              ? `All (${options.length})`
               : selected.length === 1
               ? selected[0]
               : `${selected.length} selected`}
@@ -61,6 +75,26 @@ export function MultiSelectFilter({
             onChange={(e) => setSearch(e.target.value)}
             className="h-7 text-xs"
           />
+        </div>
+        <div className="flex items-center justify-between px-2 py-1 border-b">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 text-xs px-2"
+            disabled={filtered.length === 0 || allListedSelected}
+            onClick={selectAllListed}
+          >
+            {search ? "Select matches" : "Select all"}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 text-xs px-2"
+            disabled={selected.length === 0}
+            onClick={() => onChange([])}
+          >
+            Clear all
+          </Button>
         </div>
         <div className="max-h-[200px] overflow-y-auto p-1">
           {filtered.length === 0 ? (
@@ -81,18 +115,6 @@ export function MultiSelectFilter({
             ))
           )}
         </div>
-        {selected.length > 0 && (
-          <div className="p-2 border-t">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-6 text-xs w-full"
-              onClick={() => onChange([])}
-            >
-              Clear all
-            </Button>
-          </div>
-        )}
       </PopoverContent>
     </Popover>
   );
