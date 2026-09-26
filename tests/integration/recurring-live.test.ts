@@ -200,15 +200,15 @@ describe("running the action repeatedly", () => {
 });
 
 describe("the to-do hand-off", () => {
-  it("creates one configured to-do when the window opens, forwarding the caller's own credential", async () => {
+  it("sends the configured to-do the moment an item with an open range is saved, forwarding the caller's own credential", async () => {
     received.length = 0;
-    const item = (await createItem({
+    const created = await createItem({
       label: `Pay Water ${RUN}`, cadence: "monthly", anchor_date: today, expected_amount: 60, window_before_days: 0, window_after_days: 4, category: "Utilities",
       todo_config: { title_template: "Pay {label} bill", notes_template: "{amount} due {window} ({category})", category: "finance", priority: 2 },
-    })).body;
-    const res = await runSync();
-    expect(res.body.steps.todos.created).toBeGreaterThanOrEqual(1);
-
+    });
+    const item = created.body;
+    expect(created.body.todo_sync).toMatchObject({ created: 1, failed: 0 });
+    // No sync was run: saving an item whose range is already open sends its to-do right away.
     const put = todoCalls("PUT").find((r) => r.url.includes(`recurring-${item.id}-${today}`))!;
     expect(put.url).toBe(`/todos/by-source/finance/recurring-${item.id}-${today}`);
     expect(put.auth).toBe(`Bearer ${TOKEN}`);
@@ -222,15 +222,16 @@ describe("the to-do hand-off", () => {
   });
 
   it("sends each occurrence's to-do exactly once, so a person's edits in todo-tracker aren't overwritten", async () => {
+    const item = (await createItem({ label: `Once ${RUN}`, cadence: "monthly", anchor_date: today, window_after_days: 3, todo_config: {} })).body;
     received.length = 0;
     await runSync();
     await runSync();
-    expect(todoCalls("PUT").filter((r) => r.url.includes(`recurring-`) && r.url.endsWith(`-${today}`)).length).toBe(0); // everything already sent
+    await request(app).patch(`/api/recurring-items/${item.id}`).set(headers).send({ expected_amount: 12 }); // a re-save is not a re-send either
+    expect(todoCalls("PUT").filter((r) => r.url.includes(`recurring-${item.id}-`))).toHaveLength(0);
   });
 
   it("closes the to-do (once) when a transaction matches the occurrence", async () => {
     const item = (await createItem({ label: "Omega Electric", cadence: "monthly", anchor_date: today, expected_amount: 90, window_after_days: 3, todo_config: {} })).body;
-    await runSync(); // hands the to-do over
     const sent = (await occurrencesOf(item.id)).find((o) => o.expected_date === today)!;
     expect(sent.todo_id).not.toBeNull();
 
@@ -250,10 +251,11 @@ describe("the to-do hand-off", () => {
 
   it("an occurrence already matched before its to-do existed never gets one", async () => {
     received.length = 0;
-    const item = (await createItem({ label: "Sigma Cable", cadence: "monthly", anchor_date: today, expected_amount: 70, window_after_days: 3, todo_config: {} })).body;
-    await logTransaction("SIGMA CABLE", 70, today);
-    await runSync(); // match runs before the to-do step in one pass
-    expect(todoCalls("PUT").some((r) => r.url.includes(`recurring-${item.id}-`))).toBe(false);
+    await logTransaction("SIGMA CABLE", 70, today); // already posted when the item is created
+    const created = await createItem({ label: "Sigma Cable", cadence: "monthly", anchor_date: today, expected_amount: 70, window_after_days: 3, todo_config: {} });
+    await runSync(); // match runs before the to-do step, on save and in the action
+    expect(todoCalls("PUT").some((r) => r.url.includes(`recurring-${created.body.id}-`))).toBe(false);
+    expect(created.body.todo_sync).toMatchObject({ created: 0 });
   });
 
   it("puts the to-do on the list lead_days before the window opens, not before", async () => {
@@ -267,8 +269,11 @@ describe("the to-do hand-off", () => {
   });
 
   it("records a failed hand-off, reports it, and retries successfully on the next run", async () => {
-    const item = (await createItem({ label: `Flaky ${RUN}`, cadence: "monthly", anchor_date: today, todo_config: { title_template: "FLAKY-{label}" } })).body;
     failTitles = [`FLAKY-Flaky ${RUN}`];
+    const saved = await createItem({ label: `Flaky ${RUN}`, cadence: "monthly", anchor_date: today, todo_config: { title_template: "FLAKY-{label}" } });
+    expect(saved.status).toBe(201); // a failed hand-off never fails the save
+    expect(saved.body.todo_sync).toMatchObject({ created: 0, failed: 1 });
+    const item = saved.body;
     const failed = await runSync();
     expect(failed.body.status).toBe("partial");
     expect(failed.body.steps.todos.failed).toBeGreaterThanOrEqual(1);
@@ -288,7 +293,9 @@ describe("the to-do hand-off", () => {
     const saved = process.env.TODO_API_URL;
     delete process.env.TODO_API_URL;
     try {
-      const item = (await createItem({ label: `No Todo Server ${RUN}`, cadence: "monthly", anchor_date: today, todo_config: {} })).body;
+      const saved = await createItem({ label: `No Todo Server ${RUN}`, cadence: "monthly", anchor_date: today, todo_config: {} });
+      expect(saved.body.todo_sync.skippedReason).toContain("TODO_API_URL");
+      const item = saved.body;
       const res = await runSync();
       expect(res.body.steps.todos.skippedReason).toContain("TODO_API_URL");
       expect(res.body.steps.errors).toEqual([]);
@@ -320,11 +327,15 @@ describe("editing", () => {
     expect((await occurrencesOf(item.id)).find((o) => o.expected_date === today)!.window_end).toBe(addDays(today, 6));
   });
 
-  it("pausing drops unsent occurrences and stops all syncing for the item; resuming brings them back", async () => {
+  it("pausing drops unsent occurrences (keeping ones already handed to a to-do) and stops syncing the item; resuming brings the schedule back", async () => {
     received.length = 0;
     const item = (await createItem({ label: `Pausable ${RUN}`, cadence: "monthly", anchor_date: today, todo_config: {} })).body;
+    received.length = 0; // its first to-do went out on save; what matters is nothing more goes out while paused
     await request(app).patch(`/api/recurring-items/${item.id}`).set(headers).send({ is_active: false });
-    expect(await occurrencesOf(item.id)).toEqual([]);
+    // Unsent occurrences are dropped; the one already handed to a to-do (sent on save) stays.
+    const kept = await occurrencesOf(item.id);
+    expect(kept.length).toBeGreaterThan(0);
+    expect(kept.every((o) => o.todo_id !== null)).toBe(true);
     await runSync();
     expect(todoCalls("PUT").some((r) => r.url.includes(`recurring-${item.id}-`))).toBe(false);
     await request(app).patch(`/api/recurring-items/${item.id}`).set(headers).send({ is_active: true });

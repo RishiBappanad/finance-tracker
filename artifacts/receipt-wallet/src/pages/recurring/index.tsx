@@ -280,7 +280,16 @@ function ItemDialog({ open, onOpenChange, editing, categories, onSaved }: ItemDi
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error ?? "Could not save");
-      toast({ title: editing ? "Saved" : "Recurring item added" });
+      // Saving also tries to send the to-do right away when the range is already open.
+      const sync = body.todo_sync as { created: number; failed: number; skippedReason?: string } | null;
+      const todoNote = sync?.created
+        ? "The to-do is on your list."
+        : sync?.skippedReason
+        ? `The to-do wasn't sent: ${sync.skippedReason}.`
+        : sync?.failed
+        ? "Sending the to-do failed; it will retry on the next sync."
+        : undefined;
+      toast({ title: editing ? "Saved" : "Recurring item added", description: todoNote });
       onSaved();
       onOpenChange(false);
     } catch (e: any) {

@@ -15,7 +15,7 @@ import { db, recurringItems, recurringItemOccurrences, logDomainEvent, type Recu
 import { and, desc, eq, inArray, isNull, gte } from "drizzle-orm";
 import { addDays, nextExpectedDate, renderTodo, todayUtc, windowFor, isDateString } from "../lib/recurrence.js";
 import { checkItemConsistency, parseItemFields, parseTodoConfig, type ItemFields } from "../lib/recurring-validation.js";
-import { materializeOccurrences } from "../services/recurring-sync.js";
+import { materializeOccurrences, syncAfterSave } from "../services/recurring-sync.js";
 
 const router = Router();
 
@@ -175,7 +175,9 @@ router.post("/", async (req, res) => {
 
   await logItemEvent(userId, row, "created");
   await materializeOccurrences(userId, todayUtc()); // so the schedule shows up now, not at the next scheduled sync
-  res.status(201).json(await respondWithItem(userId, row.id));
+  // ...and, if its range is already open, its to-do too (the scheduled action would only get to it later).
+  const todoSync = await syncAfterSave(userId, todayUtc(), req.headers.authorization);
+  res.status(201).json({ ...(await respondWithItem(userId, row.id)), todo_sync: todoSync });
 });
 
 // PATCH /recurring-items/:id -- edit anything, confirm a Plaid suggestion (confirmed: true), or pause/dismiss (is_active: false)
@@ -209,7 +211,8 @@ router.patch("/:id", async (req, res) => {
   if (parsed.isActive === false || scheduleChanged) await dropRebuildablePending(row.id);
   await logItemEvent(userId, row, "updated");
   await materializeOccurrences(userId, todayUtc());
-  res.json(await respondWithItem(userId, row.id));
+  const todoSync = await syncAfterSave(userId, todayUtc(), req.headers.authorization);
+  res.json({ ...(await respondWithItem(userId, row.id)), todo_sync: todoSync });
 });
 
 // DELETE /recurring-items/:id -- history goes with it; to-dos already created in todo-tracker are left alone

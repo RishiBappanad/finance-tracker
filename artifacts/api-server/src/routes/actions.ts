@@ -15,8 +15,7 @@ import { upsertCpiSnapshots } from "@workspace/db";
 import { db } from "@workspace/db";
 import { fetchCpiSeries } from "../services/bls.js";
 import { getPlaidAdapter } from "../services/plaid.js";
-import { createTodoClient } from "../services/todo-client.js";
-import { runRecurringSync } from "../services/recurring-sync.js";
+import { runRecurringSync, todoClientFor } from "../services/recurring-sync.js";
 import { todayUtc } from "../lib/recurrence.js";
 
 const router = Router();
@@ -56,10 +55,7 @@ router.post("/sync-cpi/run", async (_req, res) => {
 // Where todo-tracker lives is TODO_API_URL (e.g. https://<gateway>/todo); without it the
 // to-do step reports itself skipped and everything else still runs.
 router.post("/sync-recurring/run", async (req, res) => {
-  const authorization = req.headers.authorization;
-  const todoBase = process.env.TODO_API_URL;
-  const todoClient = todoBase && authorization ? createTodoClient({ baseUrl: todoBase, authorization }) : null;
-  const reason = !todoBase ? "TODO_API_URL is not configured" : "no Authorization header to forward to todo-tracker";
+  const { client: todoClient, reason } = todoClientFor(req.headers.authorization);
 
   const steps = await runRecurringSync(req.user!.userId, { today: todayUtc(), todoClient, noTodoClientReason: reason, plaid: getPlaidAdapter() });
   res.json({

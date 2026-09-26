@@ -42,7 +42,7 @@ import { mapStreamToSuggestion } from "../lib/recurring-plaid.js";
 import { bestMatch, POSTING_SLACK_DAYS } from "./recurring-matcher.js";
 import { scoreMerchant } from "./reconciler.js";
 import type { PlaidAdapter } from "./plaid.js";
-import type { TodoClient } from "./todo-client.js";
+import { createTodoClient, type TodoClient } from "./todo-client.js";
 
 /** The most to-dos handed to todo-tracker in one run -- a backlog drains over successive runs instead of one long request. */
 const MAX_TODOS_PER_RUN = 50;
@@ -286,6 +286,36 @@ export async function syncPlaidSuggestions(userId: number, today: string, adapte
     }
   }
   return summary;
+}
+
+// ── who to talk to, and syncing right after a save ──────────────────────────
+
+/**
+ * The client for todo-tracker, built from the request's own credential (Actions
+ * contract: reuse the triggering credential) and TODO_API_URL. `client` is null, with
+ * the reason, when either is missing -- the to-do step then reports itself skipped.
+ */
+export function todoClientFor(authorization: string | undefined): { client: TodoClient | null; reason: string } {
+  const baseUrl = process.env.TODO_API_URL;
+  if (baseUrl && authorization) return { client: createTodoClient({ baseUrl, authorization }), reason: "" };
+  return { client: null, reason: !baseUrl ? "TODO_API_URL is not configured" : "no Authorization header to forward to todo-tracker" };
+}
+
+/**
+ * The part of a sync worth doing the moment someone saves an item, so a range that is
+ * already open puts its to-do on the list now instead of waiting for the next scheduled
+ * run: match first (an item whose transaction already posted needs no to-do), then hand
+ * over due to-dos. Same idempotent functions the action uses, so it can't double-send.
+ * Best-effort: a failure here must never fail the save itself (returns null).
+ */
+export async function syncAfterSave(userId: number, today: string, authorization: string | undefined): Promise<TodoSyncSummary | null> {
+  try {
+    await matchOccurrences(userId, today);
+    const { client, reason } = todoClientFor(authorization);
+    return await syncTodos(userId, today, client, reason);
+  } catch {
+    return null;
+  }
 }
 
 // ── the whole run ───────────────────────────────────────────────────────────
