@@ -120,7 +120,7 @@ function scoreDate(receiptDate: string, txnDate: string): number {
   return table[delta] ?? Math.max(0, 1.0 - Math.abs(delta) * 0.15);
 }
 
-function scoreMerchant(storeName: string | null, merchantName: string | null): number {
+export function scoreMerchant(storeName: string | null, merchantName: string | null): number {
   const a = normalizeName(storeName);
   const b = normalizeName(merchantName);
   if (!a || !b) return 0;

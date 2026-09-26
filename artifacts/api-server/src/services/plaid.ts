@@ -28,11 +28,32 @@ export interface SyncResult {
   hasMore: boolean;
 }
 
+/**
+ * One stream from Plaid's Recurring Transactions endpoint -- Plaid's own
+ * detection of "this shows up on a schedule", so finance-tracker writes no
+ * detection logic, only a fetch-and-map (lib/recurring-plaid.ts).
+ */
+export interface PlaidRecurringStream {
+  streamId: string;
+  accountId: string;
+  description: string;
+  merchantName: string | null;
+  frequency: string; // WEEKLY | BIWEEKLY | SEMI_MONTHLY | MONTHLY | ANNUALLY | UNKNOWN
+  status: string; // MATURE | EARLY_DETECTION | TOMBSTONED | UNKNOWN
+  isActive: boolean;
+  direction: "outflow" | "inflow";
+  averageAmount: number; // magnitude; the sign is `direction`
+  lastAmount: number | null;
+  lastDate: string | null;
+  predictedNextDate: string | null;
+}
+
 export interface PlaidAdapter {
   readonly name: string;
   exchangePublicToken(publicToken: string): Promise<{ accessToken: string; itemId: string }>;
   getAccounts(accessToken: string): Promise<PlaidAccountRaw[]>;
   syncTransactions(accessToken: string, cursor?: string): Promise<SyncResult & { nextCursor: string }>;
+  getRecurringStreams(accessToken: string): Promise<PlaidRecurringStream[]>;
 }
 
 export interface PlaidAccountRaw {
@@ -103,6 +124,31 @@ const livePlaidAdapter: PlaidAdapter = {
       nextCursor: data.next_cursor ?? "",
     };
   },
+  async getRecurringStreams(accessToken: string) {
+    const { PLAID_CLIENT_ID, PLAID_SECRET, PLAID_ENV = "sandbox" } = process.env;
+    const res = await fetch(`https://${PLAID_ENV}.plaid.com/transactions/recurring/get`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ client_id: PLAID_CLIENT_ID, secret: PLAID_SECRET, access_token: accessToken }),
+    });
+    const data = (await res.json()) as any;
+    if (!res.ok) throw new Error(data?.error_message ?? `Plaid recurring/get returned ${res.status}`);
+    const map = (direction: "outflow" | "inflow") => (s: any): PlaidRecurringStream => ({
+      streamId: s.stream_id,
+      accountId: s.account_id,
+      description: s.description ?? "",
+      merchantName: s.merchant_name ?? null,
+      frequency: s.frequency ?? "UNKNOWN",
+      status: s.status ?? "UNKNOWN",
+      isActive: s.is_active ?? true,
+      direction,
+      averageAmount: Math.abs(s.average_amount?.amount ?? 0),
+      lastAmount: s.last_amount?.amount != null ? Math.abs(s.last_amount.amount) : null,
+      lastDate: s.last_date ?? null,
+      predictedNextDate: s.predicted_next_date ?? null,
+    });
+    return [...(data.outflow_streams ?? []).map(map("outflow")), ...(data.inflow_streams ?? []).map(map("inflow"))];
+  },
 };
 
 // ── Mock adapter (dev/demo mode) ──────────────────────────────────────────────
@@ -116,6 +162,9 @@ const mockPlaidAdapter: PlaidAdapter = {
   },
   async syncTransactions(_accessToken: string) {
     return { added: [], modified: [], removed: [], hasMore: false, nextCursor: "" };
+  },
+  async getRecurringStreams(_accessToken: string) {
+    return [];
   },
 };
 

@@ -1,17 +1,6 @@
 import { ReactNode, useState } from "react";
 import { Link, useLocation } from "wouter";
-import {
-  LayoutDashboard,
-  Receipt,
-  ArrowLeftRight,
-  Building2,
-  Wallet,
-  PieChart,
-  Target,
-  LogOut,
-  Menu,
-  X
-} from "lucide-react";
+import { LayoutDashboard, Receipt, ArrowLeftRight, Building2, Wallet, PieChart, Target, LogOut, Menu, X, Repeat } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/use-auth";
 import { AppSwitcher, MobileAppSwitcher } from "trackstack-ui";
@@ -34,6 +23,7 @@ export function Layout({ children }: LayoutProps) {
     { href: "/transactions", label: "Transactions", icon: ArrowLeftRight },
     { href: "/spending", label: "Cash Flow", icon: PieChart },
     { href: "/goals", label: "Goals", icon: Target },
+    { href: "/recurring", label: "Recurring", icon: Repeat },
     { href: "/reconcile", label: "Reconcile", icon: Wallet },
     { href: "/accounts", label: "Accounts", icon: Building2 },
   ];

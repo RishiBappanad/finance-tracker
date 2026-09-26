@@ -10,6 +10,7 @@ import categoriesRouter from "./categories.js";
 import { eventsRouter, aggregationsRouter } from "./events.js";
 import goalsRouter from "./goals.js";
 import actionsRouter from "./actions.js";
+import recurringItemsRouter from "./recurring-items.js";
 import { requireAuth } from "../middlewares/auth.js";
 
 const router: IRouter = Router();
@@ -30,5 +31,6 @@ router.use("/events", requireAuth, eventsRouter);
 router.use("/aggregations", requireAuth, aggregationsRouter);
 router.use("/goals", requireAuth, goalsRouter);
 router.use("/actions", requireAuth, actionsRouter);
+router.use("/recurring-items", requireAuth, recurringItemsRouter);
 
 export default router;

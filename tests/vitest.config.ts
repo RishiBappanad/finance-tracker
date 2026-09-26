@@ -16,6 +16,7 @@ export default defineConfig({
       "tests/integration/events-adapter-live.test.ts",
       "tests/integration/categories-live.test.ts",
       "tests/integration/goals-live.test.ts",
+      "tests/integration/recurring-live.test.ts",
     ],
     testTimeout: 15_000,
     env: {

@@ -13,6 +13,7 @@ import Transactions from "@/pages/transactions/index";
 import Reconcile from "@/pages/reconcile/index";
 import Spending from "@/pages/spending/index";
 import Goals from "@/pages/goals/index";
+import Recurring from "@/pages/recurring/index";
 import Accounts from "@/pages/accounts/index";
 import NotFound from "@/pages/not-found";
 import { Loader2 } from "lucide-react";
@@ -66,6 +67,7 @@ function ProtectedRoutes() {
         <Route path="/reconcile" component={Reconcile} />
         <Route path="/spending" component={Spending} />
         <Route path="/goals" component={Goals} />
+        <Route path="/recurring" component={Recurring} />
         <Route path="/accounts" component={Accounts} />
         <Route component={NotFound} />
       </Switch>

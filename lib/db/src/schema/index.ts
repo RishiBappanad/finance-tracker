@@ -9,3 +9,5 @@ export * from "./user_categories";
 export * from "./domain_events";
 export * from "./goals";
 export * from "./cpi_snapshots";
+export * from "./recurring_items";
+export * from "./recurring_item_occurrences";
