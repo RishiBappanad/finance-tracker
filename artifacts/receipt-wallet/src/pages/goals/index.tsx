@@ -16,7 +16,6 @@ import {
 } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { CategoryCombobox } from "@/components/category-combobox";
 import { MultiSelectFilter } from "@/components/multi-select-filter";
 import {
   Target,
@@ -545,13 +544,15 @@ function buildAdvancedPayload(form: AdvancedFormState, allCategories: string[] =
   return { ...base, reference_query, reference_amount: null, inflation_adjusted: form.inflationAdjusted, ...longTermFields };
 }
 
-function applyPresetToAdvancedForm(preset: Preset, category: string): AdvancedFormState {
+function applyPresetToAdvancedForm(preset: Preset, categories: string[]): AdvancedFormState {
   const form = defaultAdvancedForm();
-  // Every preset's own measure_query/reference_query share one category
+  // Every preset's own measure_query/reference_query share one category set
   // by design (that's what a preset IS) -- start both sides there; the
-  // user can then split referenceCategories off to something else.
-  form.measureCategories = [category];
-  form.referenceCategories = [category];
+  // user can then split referenceCategories off to something else. An empty
+  // selection (Select All / Clear All on the category picker) means "every
+  // category", same convention as Advanced's own category pickers.
+  form.measureCategories = categories;
+  form.referenceCategories = categories;
   form.comparator = preset.comparator;
   form.severity = "target";
   if (preset.tolerance_percent !== undefined) form.tolerancePercent = preset.tolerance_percent;
@@ -590,10 +591,12 @@ function CreateGoalDialog({ open, onOpenChange, categories, onCreated }: CreateG
   const [tab, setTab] = useState<"basic" | "presets" | "advanced">("basic");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [presets, setPresets] = useState<{ basic: Preset[]; advanced: Preset[] } | null>(null);
-  const [presetCategory, setPresetCategory] = useState("");
+  const [presetCategories, setPresetCategories] = useState<string[]>([]);
 
-  // Basic form
-  const [basicCategory, setBasicCategory] = useState("");
+  // Basic form -- [] means "every category" (Select All / nothing picked),
+  // same convention as Advanced's category pickers; unifies this with the
+  // one MultiSelectFilter used everywhere else in the app.
+  const [basicCategories, setBasicCategories] = useState<string[]>([]);
   const [basicComparator, setBasicComparator] = useState<"lte" | "gte">("lte");
   const [basicAmount, setBasicAmount] = useState("");
   const [basicPeriod, setBasicPeriod] = useState<Period>("monthly");
@@ -614,30 +617,49 @@ function CreateGoalDialog({ open, onOpenChange, categories, onCreated }: CreateG
   useEffect(() => {
     if (open) {
       setTab("basic");
-      setBasicCategory("");
+      setBasicCategories([]);
       setBasicAmount("");
       setAdvanced(defaultAdvancedForm());
-      setPresetCategory("");
+      setPresetCategories([]);
     }
   }, [open]);
 
   const submitBasic = async () => {
-    if (!basicCategory || !basicAmount) {
-      toast({ title: "Missing info", description: "Pick a category and an amount.", variant: "destructive" });
+    if (!basicAmount) {
+      toast({ title: "Missing info", description: "Enter an amount.", variant: "destructive" });
       return;
     }
     setIsSubmitting(true);
     try {
+      // A single picked category still goes through the flat shorthand
+      // (category: string) -- the server's simplest, most-validated path.
+      // Zero (every category, via Select All/Clear All) or 2+ categories
+      // aren't expressible in that shorthand, so those fall back to the
+      // same full measure_query/reference_amount shape Advanced posts,
+      // built the same way via categoryFilters().
+      const body =
+        basicCategories.length === 1
+          ? {
+              category: basicCategories[0],
+              comparator: basicComparator,
+              target_amount: Number(basicAmount),
+              period: basicPeriod,
+              severity: basicSeverity,
+            }
+          : {
+              comparator: basicComparator,
+              severity: basicSeverity,
+              measure_query: {
+                aggregation: "sum",
+                filters: categoryFilters(basicCategories, categories),
+                timeWindow: { kind: "current_period", period: basicPeriod },
+              },
+              reference_amount: Number(basicAmount),
+            };
       const res = await authFetch(`${API_BASE}/api/goals`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          category: basicCategory,
-          comparator: basicComparator,
-          target_amount: Number(basicAmount),
-          period: basicPeriod,
-          severity: basicSeverity,
-        }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error();
       toast({ title: "Goal created" });
@@ -651,8 +673,8 @@ function CreateGoalDialog({ open, onOpenChange, categories, onCreated }: CreateG
   };
 
   const submitAdvanced = async () => {
-    // No category is a valid, meaningful choice here (unlike Basic/
-    // Presets) -- an empty selection means "every category," e.g. "total
+    // No category is a valid, meaningful choice here, same as on Basic/
+    // Presets now -- an empty selection means "every category," e.g. "total
     // spending this month" -- so there's nothing to validate before
     // submitting; the server validates comparator/aggregation shape.
     setIsSubmitting(true);
@@ -674,15 +696,14 @@ function CreateGoalDialog({ open, onOpenChange, categories, onCreated }: CreateG
   };
 
   const applyPreset = (preset: Preset) => {
-    if (!presetCategory) {
-      toast({ title: "Pick a category first", description: "Presets apply to one category at a time.", variant: "destructive" });
-      return;
-    }
+    // No category picked is a valid, meaningful choice here too (Select
+    // All / nothing ticked) -- "every category", same as everywhere else
+    // a MultiSelectFilter is used -- so there's nothing to gate on.
     if (preset.measure_query || preset.reference_query) {
-      setAdvanced(applyPresetToAdvancedForm(preset, presetCategory));
+      setAdvanced(applyPresetToAdvancedForm(preset, presetCategories));
       setTab("advanced");
     } else {
-      setBasicCategory(presetCategory);
+      setBasicCategories(presetCategories);
       setBasicComparator(preset.comparator === "gte" ? "gte" : "lte");
       setBasicPeriod(preset.period ?? "monthly");
       setTab("basic");
@@ -708,13 +729,18 @@ function CreateGoalDialog({ open, onOpenChange, categories, onCreated }: CreateG
           {/* Basic */}
           <TabsContent value="basic" className="space-y-4 pt-2">
             <div className="space-y-1.5">
-              <Label>Category</Label>
-              <CategoryCombobox
-                categories={categories}
-                value={basicCategory || null}
-                onChange={setBasicCategory}
-                placeholder="Choose a category"
-                triggerClassName="w-full"
+              <Label>
+                Categories{" "}
+                <span className="text-muted-foreground font-normal">
+                  (pick several to cap them combined — none picked means every category)
+                </span>
+              </Label>
+              <MultiSelectFilter
+                label="Every category"
+                options={categories}
+                selected={basicCategories}
+                onChange={setBasicCategories}
+                className="w-full min-w-0"
               />
             </div>
             <div className="grid grid-cols-2 gap-3">
@@ -773,13 +799,16 @@ function CreateGoalDialog({ open, onOpenChange, categories, onCreated }: CreateG
           {/* Presets */}
           <TabsContent value="presets" className="space-y-4 pt-2">
             <div className="space-y-1.5">
-              <Label>Apply to category</Label>
-              <CategoryCombobox
-                categories={categories}
-                value={presetCategory || null}
-                onChange={setPresetCategory}
-                placeholder="Choose a category"
-                triggerClassName="w-full"
+              <Label>
+                Apply to categories{" "}
+                <span className="text-muted-foreground font-normal">(none picked means every category)</span>
+              </Label>
+              <MultiSelectFilter
+                label="Every category"
+                options={categories}
+                selected={presetCategories}
+                onChange={setPresetCategories}
+                className="w-full min-w-0"
               />
             </div>
             {!presets ? (
