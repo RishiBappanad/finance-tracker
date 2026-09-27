@@ -17,6 +17,7 @@ import { eq, and, inArray } from "drizzle-orm";
 
 const { default: app } = await import("../../artifacts/api-server/src/app.js");
 const { syncPlaidSuggestions } = await import("../../artifacts/api-server/src/services/recurring-sync.js");
+const { _resetCalendarPusherForTests } = await import("../../artifacts/api-server/src/lib/calendar-push.js");
 
 const JWT_SECRET = "test-secret-for-jwt-signing";
 const RUN = Date.now();
@@ -46,6 +47,13 @@ const todoIdsBySource = new Map<string, number>();
 let todoServer: http.Server;
 let todoBaseUrl = "";
 
+// A fake trackstack-gateway, recording every POST /api/calendar/entries this run makes --
+// exercises the SAME reusable calendar-push.ts wrapper every future push site (this one, and
+// eventually goal crossings) shares, over real HTTP, without depending on a real gateway/calendar DB.
+interface RecordedCalendarPush { auth: string | undefined; body: any }
+const calendarPushes: RecordedCalendarPush[] = [];
+let calendarServer: http.Server;
+
 beforeAll(async () => {
   todoServer = http.createServer((req, res) => {
     let raw = "";
@@ -69,11 +77,28 @@ beforeAll(async () => {
   await new Promise<void>((resolve) => todoServer.listen(0, "127.0.0.1", resolve));
   todoBaseUrl = `http://127.0.0.1:${(todoServer.address() as AddressInfo).port}`;
   process.env.TODO_API_URL = todoBaseUrl;
+
+  calendarServer = http.createServer((req, res) => {
+    let raw = "";
+    req.on("data", (c) => (raw += c));
+    req.on("end", () => {
+      calendarPushes.push({ auth: req.headers.authorization, body: raw ? JSON.parse(raw) : null });
+      res.setHeader("Content-Type", "application/json");
+      res.statusCode = 201;
+      res.end("{}");
+    });
+  });
+  await new Promise<void>((resolve) => calendarServer.listen(0, "127.0.0.1", resolve));
+  process.env.CALENDAR_API_URL = `http://127.0.0.1:${(calendarServer.address() as AddressInfo).port}`;
+  _resetCalendarPusherForTests(); // calendar-push.ts memoizes on first call -- force it to pick up the URL above
 });
 
 afterAll(async () => {
   todoServer?.close();
+  calendarServer?.close();
   delete process.env.TODO_API_URL;
+  delete process.env.CALENDAR_API_URL;
+  _resetCalendarPusherForTests();
   for (const uid of [USER_ID, OTHER_USER_ID]) {
     await db.delete(institutions).where(eq(institutions.userId, uid)).catch(() => {});
     await db.delete(recurringItems).where(eq(recurringItems.userId, uid)).catch(() => {}); // occurrences cascade
@@ -99,6 +124,10 @@ function todoCalls(method: string) {
   return received.filter((r) => r.method === method);
 }
 
+function calendarPushFor(itemId: number) {
+  return calendarPushes.filter((p) => p.body?.owner_type === "recurring_item" && p.body?.owner_id === String(itemId));
+}
+
 describe("POST /recurring-items -- create and validate", () => {
   it("creates an item with a range, computes the next date, and materializes its schedule immediately", async () => {
     const res = await createItem({ label: `Rent ${RUN}`, cadence: "monthly", anchor_date: today, expected_amount: 1800, window_before_days: 1, window_after_days: 4 });
@@ -106,6 +135,15 @@ describe("POST /recurring-items -- create and validate", () => {
     expect(res.body).toMatchObject({ label: `Rent ${RUN}`, cadence: "monthly", expected_amount: 1800, window_before_days: 1, window_after_days: 4, confirmed: true, is_active: true, todo_config: null, source: "user" });
     expect(res.body.next_expected_date).toBe(today);
     expect(res.body.next_occurrence).toMatchObject({ expected_date: today, window_start: addDays(today, -1), window_end: addDays(today, 4), status: "pending" });
+
+    // Saving pushes its forecast to the calendar right away, the same "on save" convention as the to-do hand-off.
+    const push = calendarPushFor(res.body.id)[0];
+    expect(push.body).toMatchObject({
+      tracker: "finance", owner_type: "recurring_item", owner_id: String(res.body.id), action: "updated", kind: "forecast",
+      label: `Rent ${RUN}`, amount: 1800, occurred_at: `${addDays(today, -1)}T00:00:00.000Z`,
+    });
+    expect(push.body.metadata).toMatchObject({ window_start: addDays(today, -1), window_end: addDays(today, 4) });
+    expect(push.auth).toBe(headers.Authorization);
   });
 
   it("rejects bad input with a clear 400", async () => {
@@ -327,6 +365,19 @@ describe("editing", () => {
     expect((await occurrencesOf(item.id)).find((o) => o.expected_date === today)!.window_end).toBe(addDays(today, 6));
   });
 
+  it("pausing removes the item from the calendar; resuming pushes it back", async () => {
+    const item = (await createItem({ label: `Calendar Pause ${RUN}`, cadence: "monthly", anchor_date: today })).body;
+    calendarPushes.length = 0;
+    await request(app).patch(`/api/recurring-items/${item.id}`).set(headers).send({ is_active: false });
+    const [removed] = calendarPushFor(item.id);
+    expect(removed.body).toMatchObject({ owner_type: "recurring_item", owner_id: String(item.id), action: "deleted" });
+
+    calendarPushes.length = 0;
+    await request(app).patch(`/api/recurring-items/${item.id}`).set(headers).send({ is_active: true });
+    const [restored] = calendarPushFor(item.id);
+    expect(restored.body).toMatchObject({ action: "updated", kind: "forecast" });
+  });
+
   it("pausing drops unsent occurrences (keeping ones already handed to a to-do) and stops syncing the item; resuming brings the schedule back", async () => {
     received.length = 0;
     const item = (await createItem({ label: `Pausable ${RUN}`, cadence: "monthly", anchor_date: today, todo_config: {} })).body;
@@ -342,9 +393,12 @@ describe("editing", () => {
     expect((await occurrencesOf(item.id)).length).toBeGreaterThan(0);
   });
 
-  it("deleting removes the item, its history, and logs the deletion", async () => {
+  it("deleting removes the item, its history, logs the deletion, and removes it from the calendar", async () => {
     const item = (await createItem({ label: `Delete ${RUN}`, cadence: "monthly", anchor_date: today })).body;
+    calendarPushes.length = 0;
     expect((await request(app).delete(`/api/recurring-items/${item.id}`).set(headers)).status).toBe(204);
+    const [removed] = calendarPushFor(item.id);
+    expect(removed.body).toMatchObject({ owner_type: "recurring_item", owner_id: String(item.id), action: "deleted" });
     expect((await request(app).get("/api/recurring-items").set(headers)).body.some((i: any) => i.id === item.id)).toBe(false);
     expect(await db.select().from(recurringItemOccurrences).where(eq(recurringItemOccurrences.recurringItemId, item.id))).toHaveLength(0);
     const events = await db.select().from(domainEvents).where(and(eq(domainEvents.ownerType, "recurring_item"), eq(domainEvents.ownerId, String(item.id))));
@@ -368,7 +422,8 @@ describe("Plaid-detected suggestions", () => {
   // active=true: a dismissed suggestion stays in the table (so it isn't suggested again) but is not listed.
   const suggestions = async () => (await request(app).get("/api/recurring-items?active=true&confirmed=false").set(headers)).body.filter((i: any) => i.source === "plaid");
 
-  it("files a new stream as an unconfirmed suggestion, once", async () => {
+  it("files a new stream as an unconfirmed suggestion, once, and never pushes it to the calendar", async () => {
+    calendarPushes.length = 0;
     streams = [stream()];
     expect(await syncPlaidSuggestions(USER_ID, today, adapter)).toMatchObject({ suggested: 1, updated: 0 });
     expect(await syncPlaidSuggestions(USER_ID, today, adapter)).toMatchObject({ suggested: 0, updated: 0 });
@@ -376,6 +431,7 @@ describe("Plaid-detected suggestions", () => {
     expect(s).toMatchObject({ label: "Hulu", cadence: "monthly", expected_amount: 17.99, confirmed: false, source: "plaid", window_after_days: 2 });
     // ...and an unconfirmed suggestion gets no occurrences (nothing is matched or handed to a to-do until accepted)
     expect(await occurrencesOf(s.id)).toEqual([]);
+    expect(calendarPushFor(s.id)).toEqual([]);
   });
 
   it("refreshes an untouched suggestion but never overwrites one the person confirmed", async () => {
@@ -409,5 +465,16 @@ describe("Plaid-detected suggestions", () => {
     expect((await syncPlaidSuggestions(USER_ID, today, adapter)).suggested).toBe(0);
     const broken = { name: "stub", getRecurringStreams: async () => { throw new Error("ITEM_LOGIN_REQUIRED"); } } as any;
     expect(await syncPlaidSuggestions(USER_ID, today, broken)).toMatchObject({ suggested: 0, error: "ITEM_LOGIN_REQUIRED" });
+  });
+
+  it("accepting a suggestion is the moment it becomes calendar-worthy", async () => {
+    streams = [stream({ streamId: `stream-${RUN}-f`, merchantName: "Disney Plus", description: "DISNEY PLUS", lastAmount: 13.99 })];
+    await syncPlaidSuggestions(USER_ID, today, adapter);
+    const s = (await suggestions()).find((i: any) => i.label === "Disney Plus");
+    expect(calendarPushFor(s.id)).toEqual([]); // not yet -- still unconfirmed
+
+    calendarPushes.length = 0;
+    await request(app).patch(`/api/recurring-items/${s.id}`).set(headers).send({ confirmed: true });
+    expect(calendarPushFor(s.id)[0]?.body).toMatchObject({ action: "updated", kind: "forecast" });
   });
 });

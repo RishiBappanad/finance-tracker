@@ -138,8 +138,8 @@ importers:
         specifier: ^10.5.0
         version: 10.5.0
       trackstack-ui:
-        specifier: ^0.3.0
-        version: 0.3.0(express@5.2.1)(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
+        specifier: ^0.6.0
+        version: 0.6.0(express@5.2.1)(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
     devDependencies:
       '@types/cookie-parser':
         specifier: ^1.4.10
@@ -3769,20 +3769,6 @@ packages:
     resolution: {integrity: sha512-o5sSPKEkg/DIQNmH43V0/uerLrpzVedkUh8tGNvaeXpfpuwjKenlSox/2O/BTlZUtEe+JG7s5YhEz608PlAHRA==}
     engines: {node: '>=0.6'}
 
-  trackstack-ui@0.3.0:
-    resolution: {integrity: sha512-tPWUI+Wxu24ilwhgpzRPJ1Zm3wXzNcvuVvnfjch6dugYcjdaNu4ixDqhMBgY4EQdZNjJ0PHMr5EAUunnuQbgIw==}
-    peerDependencies:
-      express: '>=4.0.0'
-      react: '>=18.0.0'
-      react-dom: '>=18.0.0'
-    peerDependenciesMeta:
-      express:
-        optional: true
-      react:
-        optional: true
-      react-dom:
-        optional: true
-
   trackstack-ui@0.6.0:
     resolution: {integrity: sha512-gwfxzcHN+4UQOy6W6+Et7fhqAwZp3RPObiy9762ISrYPOUTHINFSWep5xMIMfTGBpOg3WnxAWtfXE96YwPRqOA==}
     peerDependencies:
@@ -7163,17 +7149,6 @@ snapshots:
   tinyrainbow@3.1.0: {}
 
   toidentifier@1.0.1: {}
-
-  trackstack-ui@0.3.0(express@5.2.1)(react-dom@19.1.0(react@19.1.0))(react@19.1.0):
-    dependencies:
-      clsx: 2.1.1
-      jsonwebtoken: 9.0.3
-      lucide-react: 0.468.0(react@19.1.0)
-      tailwind-merge: 2.6.1
-    optionalDependencies:
-      express: 5.2.1
-      react: 19.1.0
-      react-dom: 19.1.0(react@19.1.0)
 
   trackstack-ui@0.6.0(express@5.2.1)(react-dom@19.1.0(react@19.1.0))(react@19.1.0):
     dependencies:

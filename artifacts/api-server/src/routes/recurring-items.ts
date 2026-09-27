@@ -15,7 +15,7 @@ import { db, recurringItems, recurringItemOccurrences, logDomainEvent, type Recu
 import { and, desc, eq, inArray, isNull, gte } from "drizzle-orm";
 import { addDays, nextExpectedDate, renderTodo, todayUtc, windowFor, isDateString } from "../lib/recurrence.js";
 import { checkItemConsistency, parseItemFields, parseTodoConfig, type ItemFields } from "../lib/recurring-validation.js";
-import { materializeOccurrences, syncAfterSave } from "../services/recurring-sync.js";
+import { materializeOccurrences, syncAfterSave, syncItemToCalendar, removeItemFromCalendar } from "../services/recurring-sync.js";
 
 const router = Router();
 
@@ -174,7 +174,8 @@ router.post("/", async (req, res) => {
     .returning();
 
   await logItemEvent(userId, row, "created");
-  await materializeOccurrences(userId, todayUtc()); // so the schedule shows up now, not at the next scheduled sync
+  await materializeOccurrences(userId, todayUtc(), req.headers.authorization); // so the schedule shows up now, not at the next scheduled sync
+  await syncItemToCalendar(req.headers.authorization, row);
   // ...and, if its range is already open, its to-do too (the scheduled action would only get to it later).
   const todoSync = await syncAfterSave(userId, todayUtc(), req.headers.authorization);
   res.status(201).json({ ...(await respondWithItem(userId, row.id)), todo_sync: todoSync });
@@ -210,7 +211,8 @@ router.patch("/:id", async (req, res) => {
   // (any already handed to a to-do stay -- a person may be looking at that to-do) and rebuild if it's live.
   if (parsed.isActive === false || scheduleChanged) await dropRebuildablePending(row.id);
   await logItemEvent(userId, row, "updated");
-  await materializeOccurrences(userId, todayUtc());
+  await materializeOccurrences(userId, todayUtc(), req.headers.authorization);
+  await syncItemToCalendar(req.headers.authorization, row);
   const todoSync = await syncAfterSave(userId, todayUtc(), req.headers.authorization);
   res.json({ ...(await respondWithItem(userId, row.id)), todo_sync: todoSync });
 });
@@ -222,6 +224,7 @@ router.delete("/:id", async (req, res) => {
   if (!existing) return void res.status(404).json({ error: "Recurring item not found" });
   await db.delete(recurringItems).where(and(eq(recurringItems.id, existing.id), eq(recurringItems.userId, userId)));
   await logItemEvent(userId, existing, "deleted");
+  await removeItemFromCalendar(req.headers.authorization, existing.id);
   res.status(204).send();
 });
 

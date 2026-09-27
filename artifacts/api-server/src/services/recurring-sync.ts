@@ -35,6 +35,7 @@ import {
   renderTodo,
   todoCreateDate,
   todoSourceId,
+  windowFor,
   type CadenceSpec,
 } from "../lib/recurrence.js";
 import { parseTodoConfig } from "../lib/recurring-validation.js";
@@ -43,9 +44,52 @@ import { bestMatch, POSTING_SLACK_DAYS } from "./recurring-matcher.js";
 import { scoreMerchant } from "./reconciler.js";
 import type { PlaidAdapter } from "./plaid.js";
 import { createTodoClient, type TodoClient } from "./todo-client.js";
+import { pushCalendarEntry } from "../lib/calendar-push.js";
+import type { CalendarEntryInput } from "trackstack-ui/calendar-client";
 
 /** The most to-dos handed to todo-tracker in one run -- a backlog drains over successive runs instead of one long request. */
 const MAX_TODOS_PER_RUN = 50;
+
+// ── calendar push (see lib/calendar-push.ts for the reusable convention) ────
+
+/** null for an item that shouldn't be on the calendar at all right now (paused, or an
+ * unconfirmed Plaid suggestion nobody has accepted yet -- a plain forecast until then). */
+export function calendarEntryForItem(item: RecurringItem): CalendarEntryInput | null {
+  if (!item.isActive || !item.confirmed) return null;
+  const window = windowFor(item.nextExpectedDate, item.windowBeforeDays, item.windowAfterDays);
+  return {
+    owner_type: "recurring_item",
+    owner_id: String(item.id),
+    event_type: "recurring_item_forecast",
+    action: "updated",
+    kind: "forecast",
+    category: item.category,
+    amount: item.expectedAmount,
+    label: item.label,
+    occurred_at: `${window.start}T00:00:00.000Z`,
+    metadata: { window_start: window.start, window_end: window.end, cadence: item.cadence },
+  };
+}
+
+/** Upserts the item's current forecast, or removes it (paused/unconfirmed/deleted) -- call
+ * after any write that could change what's on the calendar for this item: create, edit,
+ * pause/resume, delete, and the scheduled sync's own date rollover. Fire-and-forget: never
+ * throws, and a missing/unreachable calendar is simply a no-op (see pushCalendarEntry). */
+export async function syncItemToCalendar(authorization: string | undefined, item: RecurringItem): Promise<void> {
+  const entry = calendarEntryForItem(item);
+  await pushCalendarEntry(authorization, entry ?? removalEntry(item.id));
+}
+
+function removalEntry(itemId: number): CalendarEntryInput {
+  return { owner_type: "recurring_item", owner_id: String(itemId), event_type: "recurring_item_forecast", action: "deleted", occurred_at: new Date().toISOString() };
+}
+
+/** Always removes, regardless of the item's own active/confirmed state -- for DELETE, where
+ * the row is gone and "what would its current entry look like" (syncItemToCalendar's question)
+ * no longer applies. */
+export async function removeItemFromCalendar(authorization: string | undefined, itemId: number): Promise<void> {
+  await pushCalendarEntry(authorization, removalEntry(itemId));
+}
 
 export function specOf(item: RecurringItem): CadenceSpec & { windowBeforeDays: number; windowAfterDays: number } {
   return {
@@ -59,7 +103,7 @@ export function specOf(item: RecurringItem): CadenceSpec & { windowBeforeDays: n
 
 // ── 2. occurrences ──────────────────────────────────────────────────────────
 
-export async function materializeOccurrences(userId: number, today: string): Promise<{ created: number; items: number }> {
+export async function materializeOccurrences(userId: number, today: string, authorization?: string): Promise<{ created: number; items: number }> {
   const items = await db
     .select()
     .from(recurringItems)
@@ -77,7 +121,11 @@ export async function materializeOccurrences(userId: number, today: string): Pro
       created += inserted.length;
     }
     const next = nextExpectedDate(specOf(item), today);
-    if (next !== item.nextExpectedDate) await db.update(recurringItems).set({ nextExpectedDate: next }).where(eq(recurringItems.id, item.id));
+    if (next !== item.nextExpectedDate) {
+      await db.update(recurringItems).set({ nextExpectedDate: next }).where(eq(recurringItems.id, item.id));
+      // Keeps the calendar in step with the day-to-day window rollover, not just edits.
+      await syncItemToCalendar(authorization, { ...item, nextExpectedDate: next });
+    }
   }
   return { created, items: items.length };
 }
@@ -322,6 +370,9 @@ export async function syncAfterSave(userId: number, today: string, authorization
 
 export interface RecurringSyncOptions {
   today: string;
+  /** Forwarded to both todo-tracker and the calendar push -- the Actions contract's
+   * "reuse the triggering credential" convention, one credential for every cross-service call. */
+  authorization?: string;
   /** null when finance-tracker has no todo-tracker to talk to (no TODO_API_URL, or no credential to forward). */
   todoClient: TodoClient | null;
   noTodoClientReason: string;
@@ -355,7 +406,7 @@ export async function runRecurringSync(userId: number, opts: RecurringSyncOption
   };
 
   await step("plaid", async () => { summary.plaid = await syncPlaidSuggestions(userId, opts.today, opts.plaid); });
-  await step("occurrences", async () => { summary.occurrences = await materializeOccurrences(userId, opts.today); });
+  await step("occurrences", async () => { summary.occurrences = await materializeOccurrences(userId, opts.today, opts.authorization); });
   await step("match", async () => { Object.assign(summary, await matchOccurrences(userId, opts.today)); });
   await step("todos", async () => { summary.todos = await syncTodos(userId, opts.today, opts.todoClient, opts.noTodoClientReason); });
   return summary;
