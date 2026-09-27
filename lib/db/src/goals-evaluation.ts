@@ -64,6 +64,22 @@ export function percentOfReference(measure: number, reference: number): number {
   return Math.round((measure / reference) * 10000) / 100;
 }
 
+/** A Long-Term goal's start -> current -> target progress, as a 0-100
+ * fraction of the distance from `startValue` already covered -- ported
+ * from nutrition-insights' goals_evaluation.py::journey_percent_of (built
+ * there first, for vital goals; no finance use case exists yet, added here
+ * anyway since the classification/shape costs nothing and this is a shared
+ * contract concept, not a per-tracker one). `null` (falls back to
+ * percentOfReference's plain bar) without a usable `startValue`, when
+ * `startValue === reference` (nothing to divide by), or for a comparator
+ * this directional framing doesn't fit (eq/within_tolerance_percent --
+ * "on target" isn't a one-way journey). */
+export function journeyPercentOf(comparator: Comparator, startValue: number | null | undefined, measure: number, reference: number): number | null {
+  if (startValue === null || startValue === undefined || (comparator !== "lte" && comparator !== "gte") || startValue === reference) return null;
+  const fraction = comparator === "lte" ? (startValue - measure) / (startValue - reference) : (measure - startValue) / (reference - startValue);
+  return Math.round(Math.max(0, Math.min(1, fraction)) * 10000) / 100;
+}
+
 /** Adjusts a computed reference value for inflation into the current
  * period's dollars, using the ratio of cached CPI-U index values. Falls
  * back to the unadjusted value -- logging a warning, never throwing --
@@ -93,6 +109,7 @@ export interface EvaluatedGoal {
   percent: number;
   is_compliant: boolean;
   severity: Severity;
+  journey_percent: number | null; // Long-Term goals only -- see journeyPercentOf
 }
 
 function parseStoredQuery(raw: unknown, label: string): GoalQuery {
@@ -145,6 +162,7 @@ export async function computeGoalStatus(db: Database, goal: Goal, options: { now
     percent: percentOfReference(measure.value, referenceValue),
     is_compliant: isCompliant(comparator, measure.value, referenceValue, goal.tolerancePercent ?? undefined),
     severity: goal.severity as Severity,
+    journey_percent: journeyPercentOf(comparator, goal.startValue, measure.value, referenceValue),
   };
 }
 

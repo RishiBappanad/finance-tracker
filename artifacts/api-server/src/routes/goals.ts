@@ -2,6 +2,7 @@ import { Router } from "express";
 import {
   db,
   goals,
+  domainEvents,
   type Goal,
   computeGoalStatus,
   isValidComparator,
@@ -11,8 +12,37 @@ import {
   isValidGoalQueryPeriod,
   parseGoalQuery,
   type GoalQuery,
+  evaluateGoalQuery,
+  termOf,
+  TERM_LONG_TERM,
 } from "@workspace/db";
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray, desc } from "drizzle-orm";
+
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+function isValidDateString(value: unknown): value is string {
+  if (typeof value !== "string" || !DATE_RE.test(value)) return false;
+  const d = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === value;
+}
+
+function daysUntil(targetDate: string | null): number | null {
+  if (!targetDate) return null;
+  const today = new Date(); today.setUTCHours(0, 0, 0, 0);
+  const target = new Date(`${targetDate}T00:00:00Z`);
+  return Math.round((target.getTime() - today.getTime()) / 86_400_000);
+}
+
+/** A one-time read of a Long-Term goal's measure, right now, for `startValue`
+ * when the caller doesn't supply one directly (a real earlier value -- an
+ * actual starting balance -- can be given instead). `null` if there's
+ * nothing to read yet (an empty measure still evaluates to a number here,
+ * unlike nutrition-insights' "last" aggregation, but kept Optional for
+ * parity with that tracker's copy and in case a future aggregation can
+ * return no data). */
+async function snapshotCurrentValue(userId: number, measureQuery: GoalQuery): Promise<number | null> {
+  const result = await evaluateGoalQuery(db, userId, measureQuery);
+  return result.value;
+}
 
 const router = Router();
 
@@ -83,6 +113,13 @@ function serializeGoal(g: Goal) {
     reference_scale: g.referenceQuery === null ? null : ((g.referenceQuery as GoalQuery).scale ?? 1),
     inflation_adjusted: g.inflationAdjusted,
     notify_on_crossing: g.notifyOnCrossing,
+    // Everyday (maintained, resets on schedule) vs. Long-Term (a standing
+    // target you can reach and hold) -- derived from the measure's own time
+    // window, not stored; see goal-query.ts's termOf.
+    term: termOf(g.measureQuery as GoalQuery),
+    target_date: g.targetDate,
+    days_until_target: daysUntil(g.targetDate),
+    start_value: g.startValue,
     created_at: g.createdAt.toISOString(),
     updated_at: g.updatedAt.toISOString(),
   };
@@ -136,6 +173,22 @@ router.post("/", async (req, res) => {
   const parsed = parseGoalInput(body);
   if (typeof parsed === "string") return void res.status(400).json({ error: parsed });
 
+  const term = termOf(parsed.measureQuery);
+  if (term !== TERM_LONG_TERM && (body.target_date !== undefined || body.start_value !== undefined)) {
+    return void res.status(400).json({ error: "target_date/start_value only apply to a Long-Term goal (one whose measure covers all_time or a fixed_range)" });
+  }
+  if (body.target_date !== undefined && body.target_date !== null && !isValidDateString(body.target_date)) {
+    return void res.status(400).json({ error: "target_date must be a real YYYY-MM-DD date" });
+  }
+  if (body.start_value !== undefined && body.start_value !== null && typeof body.start_value !== "number") {
+    return void res.status(400).json({ error: "start_value must be a number" });
+  }
+
+  let startValue: number | null = (body.start_value as number | null | undefined) ?? null;
+  if (term === TERM_LONG_TERM && startValue === null && body.start_value === undefined) {
+    startValue = await snapshotCurrentValue(req.user!.userId, parsed.measureQuery);
+  }
+
   try {
     const [row] = await db
       .insert(goals)
@@ -150,6 +203,8 @@ router.post("/", async (req, res) => {
         referenceQuery: parsed.referenceQuery,
         inflationAdjusted: Boolean(body.inflation_adjusted),
         notifyOnCrossing: body.notify_on_crossing === undefined ? true : Boolean(body.notify_on_crossing),
+        targetDate: (body.target_date as string | null | undefined) ?? null,
+        startValue,
       })
       .returning();
 
@@ -203,6 +258,23 @@ router.patch("/:id", async (req, res) => {
     updates.referenceQuery = parsed.referenceQuery;
   }
 
+  if (body.target_date !== undefined || body.start_value !== undefined) {
+    const current = await loadOwnedGoal(req.user!.userId, id);
+    if (!current) return void res.status(404).json({ error: "Goal not found" });
+    const effectiveMeasureQuery = (updates.measureQuery ?? current.measureQuery) as GoalQuery;
+    if (termOf(effectiveMeasureQuery) !== TERM_LONG_TERM) {
+      return void res.status(400).json({ error: "target_date/start_value only apply to a Long-Term goal (one whose measure covers all_time or a fixed_range)" });
+    }
+    if (body.target_date !== undefined) {
+      if (body.target_date !== null && !isValidDateString(body.target_date)) return void res.status(400).json({ error: "target_date must be a real YYYY-MM-DD date" });
+      updates.targetDate = body.target_date as string | null;
+    }
+    if (body.start_value !== undefined) {
+      if (body.start_value !== null && typeof body.start_value !== "number") return void res.status(400).json({ error: "start_value must be a number" });
+      updates.startValue = body.start_value as number | null;
+    }
+  }
+
   try {
     const [row] = await db
       .update(goals)
@@ -243,6 +315,7 @@ interface GoalStatusResponse {
   percent: number;
   on_track: boolean;
   severity: Severity;
+  journey_percent: number | null;
 }
 
 /** A pure, non-mutating read -- goals is pure definition now (no
@@ -261,6 +334,7 @@ async function readGoalStatus(goal: Goal): Promise<GoalStatusResponse> {
     percent: evaluated.percent,
     on_track: evaluated.is_compliant,
     severity: evaluated.severity,
+    journey_percent: evaluated.journey_percent,
   };
 }
 
@@ -270,6 +344,39 @@ router.get("/:id/status", async (req, res) => {
   if (!goal) return void res.status(404).json({ error: "Goal not found" });
 
   res.json(await readGoalStatus(goal));
+});
+
+// GET /goals/:id/history -- a Long-Term goal's own record of reaching (or
+// falling back out of) its target, read from the goal_met/goal_exceeded
+// domain_events evaluateGoalTransition already writes on every crossing.
+// Deliberately NOT pushed anywhere else (no calendar entry, no
+// notification target today): a goal crossing is a fact this goal itself
+// remembers, not something that populates a shared view -- ported from
+// nutrition-insights' identical GET /goals/:id/history.
+router.get("/:id/history", async (req, res) => {
+  const id = Number(req.params.id);
+  const goal = await loadOwnedGoal(req.user!.userId, id);
+  if (!goal) return void res.status(404).json({ error: "Goal not found" });
+
+  const limit = Math.max(1, Math.min(Number(req.query.limit) || 20, 100));
+  const rows = await db
+    .select()
+    .from(domainEvents)
+    .where(and(eq(domainEvents.userId, req.user!.userId), eq(domainEvents.ownerType, "goal"), eq(domainEvents.ownerId, String(id)), inArray(domainEvents.eventType, ["goal_met", "goal_exceeded"])))
+    .orderBy(desc(domainEvents.loggedAt))
+    .limit(limit);
+
+  res.json({
+    crossings: rows.map((r) => {
+      const metadata = JSON.parse(r.metadataJson) as { measure_value?: number; reference_value?: number };
+      return {
+        event: r.eventType === "goal_met" ? "met" : "exceeded",
+        occurred_at: r.occurredAt.toISOString(),
+        measure_value: metadata.measure_value,
+        reference_value: metadata.reference_value,
+      };
+    }),
+  });
 });
 
 /** The measure_query's own category filter, if it's a single eq filter on

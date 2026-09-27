@@ -1,4 +1,4 @@
-import { pgTable, serial, integer, text, real, boolean, jsonb, timestamp, index } from "drizzle-orm/pg-core";
+import { pgTable, serial, integer, text, real, boolean, jsonb, timestamp, date, index } from "drizzle-orm/pg-core";
 import { users } from "./users";
 
 /**
@@ -41,6 +41,18 @@ export const goals = pgTable(
     referenceQuery: jsonb("reference_query").$type<unknown>(), // GoalQuery -- set iff referenceAmount is null (the "compute it" case)
     inflationAdjusted: boolean("inflation_adjusted").notNull().default(false),
     notifyOnCrossing: boolean("notify_on_crossing").notNull().default(true),
+    // Long-Term goals only (goal-query.ts's termOf() === 'long_term' -- an
+    // all_time/fixed_range measure): an optional deadline, and a one-time
+    // snapshot of the measure's value at goal-creation time, used to draw a
+    // start -> current -> target progress bar instead of the plain
+    // current/target bar Everyday goals use. Both null for every Everyday
+    // goal. `date`, not `text` -- unlike nutrition-insights' own copy of this
+    // column (which uses TEXT specifically to dodge asyncpg's strict native-
+    // date typing), Drizzle already coerces a plain "YYYY-MM-DD" string on
+    // write/read, so this tracker's own established convention (bankTransactions
+    // .date is a native `date` column too) applies without that friction.
+    targetDate: date("target_date"),
+    startValue: real("start_value"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },

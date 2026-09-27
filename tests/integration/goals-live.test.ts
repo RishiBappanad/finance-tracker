@@ -482,6 +482,128 @@ describe("advanced: reference_query on ANOTHER category, times a multiplier (a r
   });
 });
 
+describe("Everyday vs. Long-Term goals (2026-09-27, ported from nutrition-insights)", () => {
+  const allTimeQuery = (category: string) => ({ aggregation: "sum", filters: [{ field: "category", operator: "eq", value: category }], timeWindow: { kind: "all_time" } });
+
+  it("a period-based goal (shorthand or full-form) is Everyday; an all_time measure is Long-Term", async () => {
+    const everyday = await createGoal(headers, { category: `Term Everyday ${RUN}`, comparator: "lte", target_amount: 400, period: "monthly" });
+    expect(everyday.body.term).toBe("everyday");
+    expect(everyday.body.target_date).toBeNull();
+    expect(everyday.body.start_value).toBeNull();
+
+    const longTerm = await createGoal(headers, { comparator: "lte", measure_query: allTimeQuery(`Term LongTerm ${RUN}`), reference_amount: 10000 });
+    expect(longTerm.body.term).toBe("long_term");
+  });
+
+  it("a trailing-average trend measure is still Everyday (only the MEASURE's window decides, not the reference)", async () => {
+    const res = await createGoal(headers, {
+      comparator: "within_tolerance_percent", tolerance_percent: 15,
+      measure_query: { aggregation: "sum", filters: [], timeWindow: { kind: "current_period", period: "monthly" } },
+      reference_query: { aggregation: "mean", filters: [], timeWindow: { kind: "all_time" } },
+    });
+    expect(res.body.term).toBe("everyday");
+  });
+
+  it("target_date/start_value are rejected on an Everyday goal, on both create and patch", async () => {
+    const bad1 = await createGoal(headers, { category: `Term Gate1 ${RUN}`, comparator: "lte", target_amount: 400, period: "monthly", target_date: "2033-12-31" });
+    expect(bad1.status).toBe(400);
+    const bad2 = await createGoal(headers, { category: `Term Gate2 ${RUN}`, comparator: "lte", target_amount: 400, period: "monthly", start_value: 100 });
+    expect(bad2.status).toBe(400);
+
+    const everyday = await createGoal(headers, { category: `Term Gate3 ${RUN}`, comparator: "lte", target_amount: 400, period: "monthly" });
+    const patched = await request(app).patch(`/api/goals/${everyday.body.id}`).set(headers).send({ target_date: "2033-12-31" });
+    expect(patched.status).toBe(400);
+  });
+
+  it("target_date must be a real date", async () => {
+    const res = await createGoal(headers, { comparator: "lte", measure_query: allTimeQuery(`Term BadDate ${RUN}`), reference_amount: 10000, target_date: "2033-02-30" });
+    expect(res.status).toBe(400);
+  });
+
+  it("start_value auto-snapshots the measure's current value at creation, unless one is given directly", async () => {
+    const category = `Term Snapshot ${RUN}`;
+    await logTransaction(category, 2500);
+    const auto = await createGoal(headers, { comparator: "lte", measure_query: allTimeQuery(category), reference_amount: 10000 });
+    expect(auto.body.start_value).toBe(2500);
+
+    const explicit = await createGoal(headers, { comparator: "lte", measure_query: allTimeQuery(`Term Explicit ${RUN}`), reference_amount: 10000, start_value: 999 });
+    expect(explicit.body.start_value).toBe(999);
+  });
+
+  it("target_date round-trips (including clearing it with null) and reports days remaining", async () => {
+    const res = await createGoal(headers, { comparator: "lte", measure_query: allTimeQuery(`Term Date ${RUN}`), reference_amount: 10000, target_date: "2099-01-01" });
+    expect(res.body.target_date).toBe("2099-01-01");
+    expect(res.body.days_until_target).toBeGreaterThan(0);
+
+    const overdue = await request(app).patch(`/api/goals/${res.body.id}`).set(headers).send({ target_date: "2000-01-01" });
+    expect(overdue.body.target_date).toBe("2000-01-01");
+    expect(overdue.body.days_until_target).toBeLessThan(0);
+
+    const cleared = await request(app).patch(`/api/goals/${res.body.id}`).set(headers).send({ target_date: null });
+    expect(cleared.body.target_date).toBeNull();
+  });
+
+  it("journey_percent is direction-aware for lte/gte, clamped, and falls back to null otherwise", async () => {
+    // An all-time SUM measure starts at 0 and climbs as transactions log -- the
+    // natural fit is a gte goal building UP from an explicit start (0) toward a
+    // target, the mirror image of a vital's "starts high, comes down" shape.
+    const category = `Term Journey ${RUN}`;
+    const goal = await createGoal(headers, { comparator: "gte", measure_query: allTimeQuery(category), reference_amount: 1000, start_value: 0 });
+
+    let status = await request(app).get(`/api/goals/${goal.body.id}/status`).set(headers);
+    expect(status.body.journey_percent).toBe(0); // nothing logged yet -- still at the start
+
+    await logTransaction(category, 500);
+    status = await request(app).get(`/api/goals/${goal.body.id}/status`).set(headers);
+    expect(status.body.journey_percent).toBe(50);
+
+    await logTransaction(category, 600); // past the target -- clamps at 100, doesn't overshoot past it
+    status = await request(app).get(`/api/goals/${goal.body.id}/status`).set(headers);
+    expect(status.body.journey_percent).toBe(100);
+
+    // Unlike a vital's "last" measure (no reading yet -> null), an all-time SUM
+    // always resolves to a real number (0 with nothing logged) -- auto-snapshot
+    // has no "no data" case here, so start_value: null must be explicit to opt out.
+    const noStart = await createGoal(headers, { comparator: "lte", measure_query: allTimeQuery(`Term NoStart ${RUN}`), reference_amount: 1000, start_value: null as any });
+    const noStartStatus = await request(app).get(`/api/goals/${noStart.body.id}/status`).set(headers);
+    expect(noStartStatus.body.journey_percent).toBeNull();
+    expect(noStartStatus.body.percent).not.toBeNull(); // plain bar still works
+
+    const withinTolerance = await createGoal(headers, {
+      comparator: "within_tolerance_percent", tolerance_percent: 10, start_value: 500,
+      measure_query: allTimeQuery(`Term NonDirectional ${RUN}`), reference_amount: 1000,
+    });
+    const wtStatus = await request(app).get(`/api/goals/${withinTolerance.body.id}/status`).set(headers);
+    expect(wtStatus.body.journey_percent).toBeNull(); // not lte/gte -- no one-way journey
+  });
+
+  it("GET /goals/:id/history reads the same goal_met/goal_exceeded events already logged, newest first", async () => {
+    const category = `Term History ${RUN}`;
+    const goal = await createGoal(headers, { comparator: "lte", measure_query: allTimeQuery(category), reference_amount: 500 });
+    // Nothing logged yet -- an all-time sum of zero is already <= 500 (compliant), so there's
+    // no transition to record until the first event actually pushes it over.
+    expect((await request(app).get(`/api/goals/${goal.body.id}/history`).set(headers)).body.crossings).toEqual([]);
+
+    await logTransaction(category, 600); // 0 -> 600: compliant -> noncompliant
+    let history = (await request(app).get(`/api/goals/${goal.body.id}/history`).set(headers)).body.crossings;
+    expect(history).toHaveLength(1);
+    expect(history[0]).toMatchObject({ event: "exceeded", measure_value: 600, reference_value: 500 });
+
+    await logTransaction(category, -300); // net 300: noncompliant -> compliant
+    history = (await request(app).get(`/api/goals/${goal.body.id}/history`).set(headers)).body.crossings;
+    expect(history[0]).toMatchObject({ event: "met", measure_value: 300 });
+
+    await logTransaction(category, 400); // net 700: compliant -> noncompliant again
+    history = (await request(app).get(`/api/goals/${goal.body.id}/history`).set(headers)).body.crossings;
+    expect(history.map((h: any) => h.event)).toEqual(["exceeded", "met", "exceeded"]); // newest first
+  });
+
+  it("history is scoped to the owning user", async () => {
+    const goal = await createGoal(headers, { comparator: "lte", measure_query: allTimeQuery(`Term Owner ${RUN}`), reference_amount: 500 });
+    expect((await request(app).get(`/api/goals/${goal.body.id}/history`).set(otherHeaders)).status).toBe(404);
+  });
+});
+
 describe("GET /goals/presets", () => {
   it("returns both basic and advanced tiers", async () => {
     const res = await request(app).get("/api/goals/presets").set(headers);

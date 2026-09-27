@@ -43,6 +43,27 @@ export type TimeWindowKind = (typeof TIME_WINDOW_KINDS)[number];
 export const GOAL_QUERY_PERIODS = ["daily", "weekly", "monthly"] as const;
 export type GoalQueryPeriod = (typeof GOAL_QUERY_PERIODS)[number];
 
+/** A goal's TERM -- Everyday vs. Long-Term -- derived from its measure's own
+ * time window, never stored: "current_period"/"trailing"/
+ * "same_period_last_year" all recur on a schedule and reset every period (a
+ * dining budget) -- something to MAINTAIN, never finished. "all_time"/
+ * "fixed_range" don't recur -- a standing target checked against the whole
+ * history (or a fixed span) -- something ATTAINABLE, that stays true once
+ * reached. Ported from nutrition-insights' goal_query.py::term_of (built
+ * there first, for its real Long-Term use case -- vital goals); added here
+ * with no current finance use case of its own, since the classification
+ * costs nothing extra and keeps the shared Goal Query contract's next
+ * consumer (a future Long-Term finance goal) from needing a schema change.
+ * See workspace-notes/RECURRING_AND_GOALS_SPEC.md. */
+export const TERM_EVERYDAY = "everyday";
+export const TERM_LONG_TERM = "long_term";
+export type GoalTerm = typeof TERM_EVERYDAY | typeof TERM_LONG_TERM;
+const LONG_TERM_WINDOW_KINDS: readonly TimeWindowKind[] = ["all_time", "fixed_range"];
+
+export function termOf(measureQuery: Pick<GoalQuery, "timeWindow">): GoalTerm {
+  return LONG_TERM_WINDOW_KINDS.includes(measureQuery.timeWindow.kind) ? TERM_LONG_TERM : TERM_EVERYDAY;
+}
+
 export interface FilterCondition {
   field: DirectFilterField | `metadata.${string}`;
   operator: FilterOperator;
@@ -303,8 +324,15 @@ export function resolveTimeWindow(tw: TimeWindow, now: Date = new Date()): DateR
     to.setUTCDate(to.getUTCDate() + 1); // end is inclusive in the request, exclusive internally
     return [{ from, to }];
   }
-  // all_time
-  return [{ from: new Date(0), to: new Date(8_640_000_000_000_000) }];
+  // all_time -- year 9999, not JS's own max representable date
+  // (new Date(8_640_000_000_000_000), year ~275760): that value round-trips
+  // fine through plain JS but Postgres's timestamptz parser rejects the
+  // 6-digit-year ISO string node-postgres serializes it as ("time zone
+  // displacement out of range"). Found live 2026-09-27 -- this branch had
+  // no real caller evaluating an all_time-measured goal until Long-Term
+  // goals' start_value auto-snapshot became the first one. Same upper
+  // bound nutrition-insights' own copy of this function already uses.
+  return [{ from: new Date(0), to: new Date(Date.UTC(9999, 0, 1)) }];
 }
 
 // ── Current-state deduplication ──────────────────────────────────────────

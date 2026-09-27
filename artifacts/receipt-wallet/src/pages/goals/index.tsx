@@ -28,6 +28,9 @@ import {
   AlertTriangle,
   Loader2,
   Sparkles,
+  Calendar as CalendarIcon,
+  Trophy,
+  Pencil,
 } from "lucide-react";
 import { API_BASE, authFetch } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
@@ -86,6 +89,13 @@ interface Goal {
   reference_scale?: number | null;
   inflation_adjusted: boolean;
   notify_on_crossing: boolean;
+  // Everyday (maintained, resets on schedule) vs. Long-Term (a standing target
+  // you can reach and hold) -- derived from the measure's own time window, not
+  // stored; ported from nutrition-insights' identical split.
+  term: "everyday" | "long_term";
+  target_date: string | null;
+  days_until_target: number | null;
+  start_value: number | null;
 }
 
 interface GoalStatus {
@@ -96,6 +106,7 @@ interface GoalStatus {
   percent: number;
   on_track: boolean;
   severity: Severity;
+  journey_percent: number | null;
 }
 
 interface Preset {
@@ -150,6 +161,12 @@ function formatMoney(n: number): string {
   return `$${n.toFixed(2)}`;
 }
 
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function shortDate(iso: string): string {
+  const [, m, d] = iso.split("-").map(Number);
+  return `${MONTHS[m - 1]} ${d}`;
+}
+
 // "a computed baseline" for a trend on the same categories; "0.3 × Income" when
 // the goal is compared against a computation on OTHER categories, or scaled.
 function referenceText(goal: Goal): string {
@@ -181,11 +198,61 @@ function goalSubtitle(goal: Goal): string {
   return `${goal.measure_query.aggregation} per ${periodLabel(period)}`;
 }
 
+function GoalCrossingHistory({ goalId }: { goalId: number }) {
+  const [rows, setRows] = useState<{ event: "met" | "exceeded"; occurred_at: string }[] | null>(null);
+  useEffect(() => {
+    authFetch(`${API_BASE}/api/goals/${goalId}/history`)
+      .then((r) => r.json())
+      .then((d) => setRows(d.crossings ?? []))
+      .catch(() => setRows([]));
+  }, [goalId]);
+  if (!rows) return <p className="text-xs text-muted-foreground mt-2">Loading…</p>;
+  if (rows.length === 0) return <p className="text-xs text-muted-foreground mt-2">No crossings yet.</p>;
+  return (
+    <div className="mt-2 space-y-1">
+      {rows.map((r, i) => (
+        <div key={i} className="flex items-center justify-between text-xs">
+          <span className="flex items-center gap-1">
+            {r.event === "met" ? <Trophy className="h-3 w-3 text-emerald-600" /> : <AlertTriangle className="h-3 w-3 text-amber-600" />}
+            {r.event === "met" ? "Reached" : "Fell out of range"}
+          </span>
+          <span className="text-muted-foreground">{shortDate(r.occurred_at.slice(0, 10))}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── Goal card ────────────────────────────────────────────────────────────
 
-function GoalCard({ goal, status, onDelete }: { goal: Goal; status: GoalStatus | undefined; onDelete: (id: number) => void }) {
+function GoalCard({
+  goal,
+  status,
+  onDelete,
+  onSaveTargetDate,
+}: {
+  goal: Goal;
+  status: GoalStatus | undefined;
+  onDelete: (id: number) => void;
+  onSaveTargetDate: (goal: Goal, targetDate: string | null) => Promise<void>;
+}) {
   const category = categoryFromQuery(goal.measure_query) ?? "Every category";
   const isWarning = goal.severity === "warning";
+  const isLongTerm = goal.term === "long_term";
+  const [editingDate, setEditingDate] = useState(false);
+  const [dateDraft, setDateDraft] = useState("");
+  const [showHistory, setShowHistory] = useState(false);
+  const [savingDate, setSavingDate] = useState(false);
+
+  const saveDate = async () => {
+    setSavingDate(true);
+    try {
+      await onSaveTargetDate(goal, dateDraft || null);
+      setEditingDate(false);
+    } finally {
+      setSavingDate(false);
+    }
+  };
 
   return (
     <Card className="p-5 shadow-sm relative group">
@@ -217,9 +284,31 @@ function GoalCard({ goal, status, onDelete }: { goal: Goal; status: GoalStatus |
           <div className="min-w-0">
             <p className="font-medium text-foreground truncate">{goal.label || category}</p>
             <p className="text-xs text-muted-foreground truncate">{category}</p>
+            {isLongTerm && (
+              editingDate ? (
+                <div className="flex items-center gap-1.5 mt-1">
+                  <Input type="date" value={dateDraft} onChange={(e) => setDateDraft(e.target.value)} className="h-6 text-xs w-auto" />
+                  <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={saveDate} disabled={savingDate}>Save</Button>
+                  <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={() => setEditingDate(false)}>Cancel</Button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => { setDateDraft(goal.target_date ?? ""); setEditingDate(true); }}
+                  className="flex items-center gap-1 mt-1 text-[11px] text-muted-foreground hover:text-foreground"
+                >
+                  <CalendarIcon className="h-3 w-3" />
+                  {goal.target_date
+                    ? `Target ${shortDate(goal.target_date)} · ${goal.days_until_target! >= 0 ? `${goal.days_until_target}d left` : `${-goal.days_until_target!}d overdue`}`
+                    : "+ Add a target date"}
+                </button>
+              )
+            )}
           </div>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
+          {isLongTerm && (
+            <Badge className="text-[10px] bg-primary/10 text-primary hover:bg-primary/10">Long-Term</Badge>
+          )}
           <Badge variant={isWarning ? "outline" : "secondary"} className="text-[10px]">
             {isWarning ? "Warning" : "Target"}
           </Badge>
@@ -243,6 +332,25 @@ function GoalCard({ goal, status, onDelete }: { goal: Goal; status: GoalStatus |
       <div className="mt-4">
         {status === undefined ? (
           <div className="h-2 w-full bg-secondary rounded-full animate-pulse" />
+        ) : status.journey_percent !== null ? (
+          // Long-Term, with a start value: a start -> current -> target journey, not
+          // a plain "how close to the number" bar -- see journeyPercentOf.
+          <>
+            <Progress value={status.journey_percent} className={status.on_track ? "" : isWarning ? "[&>div]:bg-amber-500" : "[&>div]:bg-destructive"} />
+            <div className="flex items-center justify-between mt-1 text-[10px] text-muted-foreground">
+              <span>Start {formatMoney(goal.start_value ?? 0)}</span>
+              <span>{Math.round(status.journey_percent)}% there</span>
+              <span>Target {formatMoney(status.reference_value)}</span>
+            </div>
+            <div className="flex items-center justify-between mt-2">
+              <span className="text-sm font-mono">
+                {formatMoney(status.measure_value)} <span className="text-muted-foreground">now</span>
+              </span>
+              <span className={`text-xs font-medium flex items-center gap-1 ${status.on_track ? "text-emerald-600" : isWarning ? "text-amber-600" : "text-destructive"}`}>
+                {status.on_track ? (<><Trophy className="h-3.5 w-3.5" /> Reached</>) : (<><AlertTriangle className="h-3.5 w-3.5" /> {isWarning ? "Off track" : "Not yet"}</>)}
+              </span>
+            </div>
+          </>
         ) : (
           <>
             <Progress
@@ -274,6 +382,15 @@ function GoalCard({ goal, status, onDelete }: { goal: Goal; status: GoalStatus |
           </>
         )}
       </div>
+
+      {isLongTerm && (
+        <>
+          <button type="button" className="mt-2 text-[11px] text-muted-foreground hover:text-foreground underline" onClick={() => setShowHistory(!showHistory)}>
+            {showHistory ? "Hide history" : "History"}
+          </button>
+          {showHistory && <GoalCrossingHistory goalId={goal.id} />}
+        </>
+      )}
     </Card>
   );
 }
@@ -304,7 +421,7 @@ interface AdvancedFormState {
   referenceCategories: string[];
   measureAggregation: Aggregation;
   measurePercentile: number;
-  period: Period;
+  period: Period | "all_time";
   comparator: Comparator;
   tolerancePercent: number;
   referenceMode: "fixed" | "computed";
@@ -323,6 +440,11 @@ interface AdvancedFormState {
   severity: Severity;
   notifyOnCrossing: boolean;
   label: string;
+  // Long-Term only (reachable today by setting the MEASURE's period to "all
+  // time"): an optional deadline, and a starting value (blank = auto-snapshot
+  // the current measure when the goal is created).
+  targetDate: string;
+  startValue: string;
 }
 
 function defaultAdvancedForm(): AdvancedFormState {
@@ -348,17 +470,20 @@ function defaultAdvancedForm(): AdvancedFormState {
     severity: "target",
     notifyOnCrossing: true,
     label: "",
+    targetDate: "",
+    startValue: "",
   };
 }
 
 function buildReferenceTimeWindow(form: AdvancedFormState): TimeWindow {
+  const period = form.period === "all_time" ? "weekly" : form.period; // the measure has no period of its own to fall back to
   switch (form.baselineKind) {
     case "current_period":
-      return { kind: "current_period", period: form.period };
+      return { kind: "current_period", period };
     case "trailing":
-      return { kind: "trailing", period: form.period, count: form.trailingCount };
+      return { kind: "trailing", period, count: form.trailingCount };
     case "same_period_last_year":
-      return { kind: "same_period_last_year", period: form.period, count: form.yearsBackCount };
+      return { kind: "same_period_last_year", period, count: form.yearsBackCount };
     case "all_time":
       return { kind: "all_time" };
     case "fixed_range":
@@ -386,7 +511,11 @@ function buildAdvancedPayload(form: AdvancedFormState, allCategories: string[] =
     aggregation: form.measureAggregation,
     ...(form.measureAggregation === "percentile" ? { percentile: form.measurePercentile } : {}),
     filters: categoryFilters(form.measureCategories, allCategories),
-    timeWindow: { kind: "current_period", period: form.period },
+    timeWindow: form.period === "all_time" ? { kind: "all_time" } : { kind: "current_period", period: form.period },
+  };
+  const longTermFields = {
+    ...(form.period === "all_time" && form.targetDate ? { target_date: form.targetDate } : {}),
+    ...(form.period === "all_time" && form.startValue !== "" ? { start_value: Number(form.startValue) } : {}),
   };
 
   const base: Record<string, unknown> = {
@@ -399,7 +528,7 @@ function buildAdvancedPayload(form: AdvancedFormState, allCategories: string[] =
   };
 
   if (form.referenceMode === "fixed") {
-    return { ...base, reference_amount: form.referenceAmount, reference_query: null, inflation_adjusted: false };
+    return { ...base, reference_amount: form.referenceAmount, reference_query: null, inflation_adjusted: false, ...longTermFields };
   }
 
   // Deliberately independent from measureCategories -- a baseline
@@ -413,7 +542,7 @@ function buildAdvancedPayload(form: AdvancedFormState, allCategories: string[] =
     timeWindow: buildReferenceTimeWindow(form),
     ...(form.scale !== 1 ? { scale: form.scale } : {}),
   };
-  return { ...base, reference_query, reference_amount: null, inflation_adjusted: form.inflationAdjusted };
+  return { ...base, reference_query, reference_amount: null, inflation_adjusted: form.inflationAdjusted, ...longTermFields };
 }
 
 function applyPresetToAdvancedForm(preset: Preset, category: string): AdvancedFormState {
@@ -736,7 +865,7 @@ function CreateGoalDialog({ open, onOpenChange, categories, onCreated }: CreateG
                 </div>
                 <div className="space-y-1.5">
                   <Label className="text-xs">This period</Label>
-                  <Select value={advanced.period} onValueChange={(v) => setAdvanced({ ...advanced, period: v as Period })}>
+                  <Select value={advanced.period} onValueChange={(v) => setAdvanced({ ...advanced, period: v as Period | "all_time" })}>
                     <SelectTrigger>
                       <SelectValue />
                     </SelectTrigger>
@@ -744,6 +873,7 @@ function CreateGoalDialog({ open, onOpenChange, categories, onCreated }: CreateG
                       <SelectItem value="daily">Daily</SelectItem>
                       <SelectItem value="weekly">Weekly</SelectItem>
                       <SelectItem value="monthly">Monthly</SelectItem>
+                      <SelectItem value="all_time">All time (a Long-Term goal)</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -758,6 +888,18 @@ function CreateGoalDialog({ open, onOpenChange, categories, onCreated }: CreateG
                     value={advanced.measurePercentile}
                     onChange={(e) => setAdvanced({ ...advanced, measurePercentile: Number(e.target.value) })}
                   />
+                </div>
+              )}
+              {advanced.period === "all_time" && (
+                <div className="grid grid-cols-2 gap-3 pt-1 border-t border-border mt-1">
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Target date (optional)</Label>
+                    <Input type="date" value={advanced.targetDate} onChange={(e) => setAdvanced({ ...advanced, targetDate: e.target.value })} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Starting amount (optional)</Label>
+                    <Input type="number" step="0.01" placeholder="current total" value={advanced.startValue} onChange={(e) => setAdvanced({ ...advanced, startValue: e.target.value })} />
+                  </div>
                 </div>
               )}
             </Card>
@@ -889,7 +1031,7 @@ function CreateGoalDialog({ open, onOpenChange, categories, onCreated }: CreateG
                   )}
                   {advanced.baselineKind === "trailing" && (
                     <div className="space-y-1.5">
-                      <Label className="text-xs">Trailing how many {periodLabel(advanced.period)}s</Label>
+                      <Label className="text-xs">Trailing how many {periodLabel(advanced.period === "all_time" ? undefined : advanced.period)}s</Label>
                       <Input
                         type="number"
                         min={1}
@@ -1056,6 +1198,20 @@ export default function Goals() {
     }
   };
 
+  const handleSaveTargetDate = async (goal: Goal, targetDate: string | null) => {
+    const res = await authFetch(`${API_BASE}/api/goals/${goal.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target_date: targetDate }),
+    });
+    if (!res.ok) {
+      toast({ title: "Error", description: "Could not save target date", variant: "destructive" });
+      return;
+    }
+    const updated: Goal = await res.json();
+    setGoals((prev) => (prev ? prev.map((g) => (g.id === updated.id ? updated : g)) : prev));
+  };
+
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
@@ -1093,7 +1249,7 @@ export default function Goals() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {goals.map((g) => (
-            <GoalCard key={g.id} goal={g} status={statuses[g.id]} onDelete={handleDelete} />
+            <GoalCard key={g.id} goal={g} status={statuses[g.id]} onDelete={handleDelete} onSaveTargetDate={handleSaveTargetDate} />
           ))}
         </div>
       )}
