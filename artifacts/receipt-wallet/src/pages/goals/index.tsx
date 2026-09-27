@@ -560,7 +560,12 @@ function applyPresetToAdvancedForm(preset: Preset, categories: string[]): Advanc
   if (preset.measure_query) {
     form.measureAggregation = preset.measure_query.aggregation;
     if (preset.measure_query.percentile !== undefined) form.measurePercentile = preset.measure_query.percentile;
-    if (preset.measure_query.timeWindow.period) form.period = preset.measure_query.timeWindow.period;
+    // all_time has no `.period` of its own -- falling through to the
+    // default (monthly) here would silently downgrade an all-time (i.e.
+    // Long-Term) preset into a current_period one the moment it's applied,
+    // since buildAdvancedPayload only emits `{ kind: "all_time" }` when
+    // form.period === "all_time" specifically.
+    form.period = preset.measure_query.timeWindow.kind === "all_time" ? "all_time" : preset.measure_query.timeWindow.period ?? form.period;
   }
   if (preset.reference_query) {
     form.referenceMode = "computed";
