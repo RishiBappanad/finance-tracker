@@ -57,7 +57,7 @@ router.post("/sync-cpi/run", async (_req, res) => {
 router.post("/sync-recurring/run", async (req, res) => {
   const { client: todoClient, reason } = todoClientFor(req.headers.authorization);
 
-  const steps = await runRecurringSync(req.user!.userId, { today: todayUtc(), todoClient, noTodoClientReason: reason, plaid: getPlaidAdapter() });
+  const steps = await runRecurringSync(req.user!.userId, { today: todayUtc(), authorization: req.headers.authorization, todoClient, noTodoClientReason: reason, plaid: getPlaidAdapter() });
   res.json({
     status: steps.errors.length === 0 && steps.todos.failed === 0 ? "ok" : "partial",
     summary: {

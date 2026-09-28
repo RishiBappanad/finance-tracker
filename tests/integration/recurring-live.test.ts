@@ -378,6 +378,35 @@ describe("editing", () => {
     expect(restored.body).toMatchObject({ action: "updated", kind: "forecast" });
   });
 
+  it("the scheduled action's own date rollover re-pushes the calendar too, not just create/edit/pause/resume/delete", async () => {
+    // Regression test: POST /actions/sync-recurring/run used to build
+    // runRecurringSync's options without `authorization` at all, so
+    // materializeOccurrences's rollover branch called syncItemToCalendar(undefined,
+    // ...) -- pushCalendarEntry's own `!authHeader` guard silently no-ops in that
+    // case, so a run of the scheduled action alone (no save) never DID push a
+    // rolled-over date to the calendar, even though the very same run's to-do
+    // hand-off worked fine (it gets its credential from the route, not from these
+    // options). Caught by hand while investigating "recurring propagates to the
+    // to-do but not the calendar."
+    const item = (await createItem({ label: `Rollover ${RUN}`, cadence: "monthly", anchor_date: today })).body;
+    const [creationPush] = calendarPushFor(item.id);
+
+    // Shift the anchor well into the past, directly in the DB (bypassing the
+    // route, which would push on its own) -- monthly cadence now recomputes to
+    // a genuinely different date than the one this item was created with, so
+    // the next sync run is guaranteed to hit the "date changed" branch.
+    await db.update(recurringItems).set({ anchorDate: addDays(today, -40) }).where(eq(recurringItems.id, item.id));
+    calendarPushes.length = 0;
+
+    const sync = await runSync();
+    expect(sync.status).toBe(200);
+
+    const [rollover] = calendarPushFor(item.id);
+    expect(rollover).toBeDefined();
+    expect(rollover.auth).toBe(headers.Authorization);
+    expect(rollover.body.metadata.window_start).not.toBe(creationPush.body.metadata.window_start);
+  });
+
   it("pausing drops unsent occurrences (keeping ones already handed to a to-do) and stops syncing the item; resuming brings the schedule back", async () => {
     received.length = 0;
     const item = (await createItem({ label: `Pausable ${RUN}`, cadence: "monthly", anchor_date: today, todo_config: {} })).body;
