@@ -1,8 +1,11 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Receipt, Wallet, AlertCircle, ArrowRightLeft, TrendingUp, Building2 } from "lucide-react";
+import {
+  Receipt, Wallet, AlertCircle, ArrowRightLeft, TrendingUp, Building2,
+  ChevronLeft, ChevronRight, Target, CheckCircle2, Loader2,
+} from "lucide-react";
 import { Link } from "wouter";
 import { Input } from "@/components/ui/input";
 import { TransactionRow, type TransactionData } from "@/components/transaction-row";
@@ -37,9 +40,47 @@ interface SpendingPoint {
   total: number;
 }
 
+interface GoalSummary {
+  id: number;
+  label: string | null;
+  term: "everyday" | "long_term";
+}
+
 function formatCurrency(amount: number | null | undefined) {
   if (amount == null) return "$0.00";
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(amount);
+}
+
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function toISODate(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+function addDays(d: Date, days: number): Date {
+  const next = new Date(d);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function startOfWeek(d: Date): Date {
+  const start = new Date(d);
+  start.setDate(start.getDate() - start.getDay()); // back up to Sunday
+  return start;
+}
+
+function formatDayLabel(d: Date): string {
+  return `${WEEKDAYS[d.getDay()]}, ${MONTHS[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
+}
+
+function formatWeekLabel(d: Date): string {
+  const start = startOfWeek(d);
+  const end = addDays(start, 6);
+  const sameMonth = start.getMonth() === end.getMonth();
+  const startLabel = `${MONTHS[start.getMonth()]} ${start.getDate()}`;
+  const endLabel = sameMonth ? `${end.getDate()}` : `${MONTHS[end.getMonth()]} ${end.getDate()}`;
+  return `${startLabel}–${endLabel}, ${end.getFullYear()}`;
 }
 
 export default function Dashboard() {
@@ -48,7 +89,6 @@ export default function Dashboard() {
     (userCategories ?? []).filter((c) => c.color).map((c) => [c.name, c.color as string])
   );
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
-  const [recentTxns, setRecentTxns] = useState<TransactionData[]>([]);
   const [chartData, setChartData] = useState<any[]>([]);
   const [chartCategories, setChartCategories] = useState<string[]>([]);
   const [cumulative, setCumulative] = useState(false);
@@ -60,19 +100,25 @@ export default function Dashboard() {
   const [isLoading, setIsLoading] = useState(true);
   const { data: accounts } = useListAccounts();
 
+  // Recent Transactions' daily/weekly, calendar-style view -- txnAnchor is
+  // "the day currently in view" either way; weekly mode widens it out to
+  // that day's whole (Sunday-Saturday) week. Defaults to the current week
+  // rather than today alone, since a brand-new day is often still empty
+  // (Plaid transactions can take 1-3 days to settle, see the chart's own
+  // warning below) and an empty "Today" would be a bad first impression.
+  const [txnViewMode, setTxnViewMode] = useState<"daily" | "weekly">("weekly");
+  const [txnAnchor, setTxnAnchor] = useState(new Date());
+  const [txnList, setTxnList] = useState<TransactionData[]>([]);
+  const [txnLoading, setTxnLoading] = useState(true);
+
+  const [goals, setGoals] = useState<GoalSummary[] | null>(null);
+  const [goalStatuses, setGoalStatuses] = useState<Record<number, { on_track: boolean }>>({});
+
   useEffect(() => {
     async function fetchDashboard() {
       try {
-        const [summaryRes, txnRes] = await Promise.all([
-          authFetch(`${API_BASE}/api/dashboard/summary`),
-          authFetch(`${API_BASE}/api/transactions?from=${getMonthAgo()}`),
-        ]);
-        const summaryData = await summaryRes.json();
-        const txnData: TransactionData[] = await txnRes.json();
-        setSummary(summaryData);
-        // Sort by date descending to get most recent first
-        txnData.sort((a, b) => b.date.localeCompare(a.date));
-        setRecentTxns(txnData.slice(0, 8));
+        const res = await authFetch(`${API_BASE}/api/dashboard/summary`);
+        setSummary(await res.json());
       } catch {}
       finally { setIsLoading(false); }
     }
@@ -82,6 +128,49 @@ export default function Dashboard() {
   useEffect(() => {
     fetchChartData();
   }, [cumulative, filterCategories, filterAccounts, chartFrom, chartTo]);
+
+  const txnRange = txnViewMode === "daily"
+    ? { from: toISODate(txnAnchor), to: toISODate(txnAnchor) }
+    : { from: toISODate(startOfWeek(txnAnchor)), to: toISODate(addDays(startOfWeek(txnAnchor), 6)) };
+
+  const fetchTxnRange = useCallback(async (from: string, to: string) => {
+    setTxnLoading(true);
+    try {
+      const res = await authFetch(`${API_BASE}/api/transactions?from=${from}&to=${to}`);
+      const data: TransactionData[] = await res.json();
+      data.sort((a, b) => b.date.localeCompare(a.date));
+      setTxnList(data);
+    } catch {
+      setTxnList([]);
+    } finally {
+      setTxnLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchTxnRange(txnRange.from, txnRange.to);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [txnViewMode, txnRange.from, txnRange.to]);
+
+  useEffect(() => {
+    async function fetchGoalsOverview() {
+      try {
+        const res = await authFetch(`${API_BASE}/api/goals?active=true`);
+        const list: GoalSummary[] = await res.json();
+        setGoals(list);
+        const entries = await Promise.all(
+          list.slice(0, 6).map(async (g) => {
+            const r = await authFetch(`${API_BASE}/api/goals/${g.id}/status`);
+            return [g.id, await r.json()] as const;
+          })
+        );
+        setGoalStatuses(Object.fromEntries(entries));
+      } catch {
+        setGoals([]);
+      }
+    }
+    fetchGoalsOverview();
+  }, []);
 
   async function fetchChartData() {
     try {
@@ -157,6 +246,9 @@ export default function Dashboard() {
           <CardContent>
             <div className="text-2xl font-bold font-mono tracking-tight">{formatCurrency(s.totalSpendThisMonth)}</div>
             <p className="text-xs text-muted-foreground mt-1">{s.totalTransactions} total transactions</p>
+            <Link href="/spending" className="text-xs text-primary hover:underline mt-2 inline-block font-medium">
+              View Cash Flow →
+            </Link>
           </CardContent>
         </Card>
 
@@ -167,9 +259,9 @@ export default function Dashboard() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold tracking-tight">{accounts?.length ?? 0}</div>
-            <p className="text-xs text-muted-foreground mt-1">
-              <Link href="/accounts" className="text-primary hover:underline">Manage accounts</Link>
-            </p>
+            <Link href="/accounts" className="text-xs text-primary hover:underline mt-2 inline-block font-medium">
+              Link Bank Account →
+            </Link>
           </CardContent>
         </Card>
 
@@ -181,6 +273,9 @@ export default function Dashboard() {
           <CardContent>
             <div className="text-2xl font-bold tracking-tight">{s.unmatchedReceipts}</div>
             <p className="text-xs text-muted-foreground mt-1">{s.matchedReceipts} of {s.totalReceipts} matched</p>
+            <Link href="/receipts" className="text-xs text-primary hover:underline mt-2 inline-block font-medium">
+              Upload Receipt →
+            </Link>
           </CardContent>
         </Card>
 
@@ -302,79 +397,141 @@ export default function Dashboard() {
         </Card>
       )}
 
-      {/* Bottom grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Recent Transactions */}
-        <Card className="border-none shadow-sm overflow-hidden lg:col-span-2">
-          <div className="p-4 border-b border-border bg-secondary/10 flex justify-between items-center">
-            <h2 className="font-semibold tracking-tight">Recent Transactions</h2>
+      {/* Recent Transactions -- expanded, calendar-style daily/weekly view.
+          Full width now that Quick Actions' 4 links moved onto their
+          corresponding stat cards above; Run Reconciliation (no natural
+          stat-card home of its own) lives in this card's header instead. */}
+      <Card className="border-none shadow-sm overflow-hidden">
+        <div className="p-4 border-b border-border bg-secondary/10 flex flex-wrap justify-between items-center gap-3">
+          <h2 className="font-semibold tracking-tight">Recent Transactions</h2>
+          <div className="flex items-center gap-3">
+            {s.pendingReconciliation > 0 && (
+              <span className="text-xs text-amber-600 dark:text-amber-400 font-medium">
+                {s.pendingReconciliation} pending match{s.pendingReconciliation === 1 ? "" : "es"}
+              </span>
+            )}
+            <Link href="/reconcile">
+              <div className="flex items-center gap-1.5 text-xs font-medium text-primary hover:underline cursor-pointer">
+                <ArrowRightLeft className="h-3.5 w-3.5" />
+                Run Reconciliation
+              </div>
+            </Link>
             <Link href="/transactions" className="text-xs text-primary hover:underline font-medium">View all →</Link>
           </div>
-          {recentTxns.length === 0 ? (
-            <div className="p-8 text-center text-muted-foreground text-sm">
-              <Wallet className="h-8 w-8 mx-auto mb-3 opacity-50" />
-              <p>No transactions yet.</p>
-              <Link href="/accounts" className="text-primary hover:underline mt-2 inline-block font-medium">
-                Link a bank account to get started
-              </Link>
+        </div>
+
+        {/* Calendar-style controls: Daily/Weekly mode, then step by day or
+            week, same button-group idiom as the chart's Daily/Cumulative
+            toggle above for visual consistency. */}
+        <div className="p-4 border-b border-border flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-1 p-1 bg-secondary/40 rounded-lg">
+            <button
+              className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${txnViewMode === "daily" ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+              onClick={() => setTxnViewMode("daily")}
+            >
+              Daily
+            </button>
+            <button
+              className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${txnViewMode === "weekly" ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+              onClick={() => setTxnViewMode("weekly")}
+            >
+              Weekly
+            </button>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              onClick={() => setTxnAnchor((d) => addDays(d, txnViewMode === "daily" ? -1 : -7))}
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </Button>
+            <span className="text-xs font-medium min-w-[170px] text-center">
+              {txnViewMode === "daily" ? formatDayLabel(txnAnchor) : formatWeekLabel(txnAnchor)}
+            </span>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              onClick={() => setTxnAnchor((d) => addDays(d, txnViewMode === "daily" ? 1 : 7))}
+            >
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+            <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => setTxnAnchor(new Date())}>
+              Today
+            </Button>
+          </div>
+        </div>
+
+        {txnLoading ? (
+          <div className="p-8 flex justify-center">
+            <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+          </div>
+        ) : txnList.length === 0 ? (
+          <div className="p-8 text-center text-muted-foreground text-sm">
+            <Wallet className="h-8 w-8 mx-auto mb-3 opacity-50" />
+            <p>No transactions {txnViewMode === "daily" ? "on this day" : "this week"}.</p>
+            <Link href="/accounts" className="text-primary hover:underline mt-2 inline-block font-medium">
+              Link a bank account to get started
+            </Link>
+          </div>
+        ) : (
+          <div className="divide-y divide-border">
+            {txnList.map((txn) => (
+              <TransactionRow key={txn.id} transaction={txn} showAccountInfo showCategoryBadge />
+            ))}
+          </div>
+        )}
+      </Card>
+
+      {/* Goals Overview -- lightweight summary, click through to Goals for
+          the full picture (creating one, target dates, crossing history). */}
+      <Link href="/goals">
+        <Card className="border-none shadow-sm p-5 hover:shadow-md transition-shadow cursor-pointer">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <Target className="h-4 w-4 text-primary" />
+              <h2 className="font-semibold tracking-tight">Goals Overview</h2>
             </div>
+            <span className="text-xs text-primary hover:underline font-medium">View all →</span>
+          </div>
+          {goals === null ? (
+            <div className="flex justify-center py-4">
+              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+            </div>
+          ) : goals.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No goals yet. Set a spending cap or a savings target.</p>
           ) : (
-            <div className="divide-y divide-border">
-              {recentTxns.map((txn) => (
-                <TransactionRow key={txn.id} transaction={txn} showAccountInfo showCategoryBadge />
-              ))}
+            <div className="space-y-2">
+              {goals.slice(0, 6).map((g) => {
+                const status = goalStatuses[g.id];
+                return (
+                  <div key={g.id} className="flex items-center justify-between text-sm">
+                    <span className="truncate">{g.label || `Goal #${g.id}`}</span>
+                    {status ? (
+                      status.on_track ? (
+                        <span className="flex items-center gap-1 text-xs text-emerald-600 shrink-0">
+                          <CheckCircle2 className="h-3.5 w-3.5" /> On track
+                        </span>
+                      ) : (
+                        <span className="flex items-center gap-1 text-xs text-destructive shrink-0">
+                          <AlertCircle className="h-3.5 w-3.5" /> Off track
+                        </span>
+                      )
+                    ) : (
+                      <span className="text-xs text-muted-foreground shrink-0">…</span>
+                    )}
+                  </div>
+                );
+              })}
+              {goals.length > 6 && (
+                <p className="text-xs text-muted-foreground pt-1">+{goals.length - 6} more</p>
+              )}
             </div>
           )}
         </Card>
-
-        {/* Quick Actions */}
-        <div className="space-y-4">
-          <Card className="border-none shadow-sm p-5">
-            <h2 className="font-semibold tracking-tight mb-4">Quick Actions</h2>
-            <div className="space-y-3">
-              <Link href="/accounts">
-                <div className="flex items-center gap-3 p-3 rounded-md bg-secondary/30 hover:bg-secondary/50 transition-colors cursor-pointer">
-                  <Building2 className="h-4 w-4 text-primary" />
-                  <span className="text-sm font-medium">Link Bank Account</span>
-                </div>
-              </Link>
-              <Link href="/receipts">
-                <div className="flex items-center gap-3 p-3 rounded-md bg-secondary/30 hover:bg-secondary/50 transition-colors cursor-pointer">
-                  <Receipt className="h-4 w-4 text-primary" />
-                  <span className="text-sm font-medium">Upload Receipt</span>
-                </div>
-              </Link>
-              <Link href="/reconcile">
-                <div className="flex items-center gap-3 p-3 rounded-md bg-secondary/30 hover:bg-secondary/50 transition-colors cursor-pointer">
-                  <ArrowRightLeft className="h-4 w-4 text-primary" />
-                  <span className="text-sm font-medium">Run Reconciliation</span>
-                </div>
-              </Link>
-              <Link href="/spending">
-                <div className="flex items-center gap-3 p-3 rounded-md bg-secondary/30 hover:bg-secondary/50 transition-colors cursor-pointer">
-                  <TrendingUp className="h-4 w-4 text-primary" />
-                  <span className="text-sm font-medium">View Cash Flow</span>
-                </div>
-              </Link>
-            </div>
-          </Card>
-
-          {s.pendingReconciliation > 0 && (
-            <Card className="border-none shadow-sm p-5 border-l-4 border-l-amber-500">
-              <div className="flex items-start gap-3">
-                <ArrowRightLeft className="h-5 w-5 text-amber-500 shrink-0 mt-0.5" />
-                <div>
-                  <p className="text-sm font-medium">{s.pendingReconciliation} pending matches</p>
-                  <p className="text-xs text-muted-foreground mt-0.5">Receipts matched but not confirmed</p>
-                  <Link href="/reconcile" className="text-xs text-primary hover:underline mt-1 inline-block">
-                    Review now →
-                  </Link>
-                </div>
-              </div>
-            </Card>
-          )}
-        </div>
-      </div>
+      </Link>
     </div>
   );
 }
