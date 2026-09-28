@@ -448,6 +448,29 @@ router.get("/presets", (_req, res) => {
         reference_query: { aggregation: "mean", filters: [], timeWindow: { kind: "trailing", period: "weekly", count: 1 } },
       },
     ],
+    // Long-Term (2026-09-28): both are a plain all-time sum on whatever
+    // category the user applies them to -- no reference_query (fixed target,
+    // typed in after applying, same as every Basic preset) since there's no
+    // sensible computed baseline for "how much should I have saved/spent,
+    // ever." This measures a derived total from categorized transactions,
+    // not a real account balance -- accurate for a lifetime spending cap
+    // (a spending total IS just a transaction sum); a proxy for a savings
+    // target (only as good as the category's coverage -- no interest, no
+    // pre-existing balance, no untracked deposits). Good enough without new
+    // backend state; a real balance-tracking primitive stays a future option
+    // if a concrete need for one shows up.
+    long_term: [
+      {
+        name: "Savings / contribution target",
+        comparator: "gte",
+        measure_query: { aggregation: "sum", filters: [], timeWindow: { kind: "all_time" } },
+      },
+      {
+        name: "Lifetime spending cap",
+        comparator: "lte",
+        measure_query: { aggregation: "sum", filters: [], timeWindow: { kind: "all_time" } },
+      },
+    ],
   });
 });
 

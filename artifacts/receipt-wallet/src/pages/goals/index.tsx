@@ -595,7 +595,7 @@ function CreateGoalDialog({ open, onOpenChange, categories, onCreated }: CreateG
   const { toast } = useToast();
   const [tab, setTab] = useState<"basic" | "presets" | "advanced">("basic");
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [presets, setPresets] = useState<{ basic: Preset[]; advanced: Preset[] } | null>(null);
+  const [presets, setPresets] = useState<{ basic: Preset[]; advanced: Preset[]; long_term: Preset[] } | null>(null);
   const [presetCategories, setPresetCategories] = useState<string[]>([]);
 
   // Basic form -- [] means "every category" (Select All / nothing picked),
@@ -853,6 +853,27 @@ function CreateGoalDialog({ open, onOpenChange, categories, onCreated }: CreateG
                       </Card>
                     ))}
                   </div>
+                </div>
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground mb-2 uppercase tracking-wide flex items-center gap-1">
+                    <Trophy className="h-3 w-3" /> Long-Term
+                  </p>
+                  <div className="space-y-2">
+                    {presets.long_term.map((p) => (
+                      <Card
+                        key={p.name}
+                        className="p-3 shadow-none border cursor-pointer hover:bg-secondary/30 transition-colors flex items-center justify-between"
+                        onClick={() => applyPreset(p)}
+                      >
+                        <span className="text-sm font-medium">{p.name}</span>
+                        <Plus className="h-3.5 w-3.5 text-muted-foreground" />
+                      </Card>
+                    ))}
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-2">
+                    Applies to the picked categories, all-time — lands on the Advanced tab so you can set the target
+                    amount, optional date, and starting value before creating.
+                  </p>
                 </div>
               </div>
             )}
