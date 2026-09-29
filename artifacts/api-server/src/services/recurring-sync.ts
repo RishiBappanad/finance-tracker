@@ -52,11 +52,39 @@ const MAX_TODOS_PER_RUN = 50;
 
 // ── calendar push (see lib/calendar-push.ts for the reusable convention) ────
 
+/** orange while the current occurrence is still open, green once it's satisfied
+ * (a real transaction match OR a person marking its to-do done manually --
+ * see markOccurrenceDoneManually) -- null (no color asserted) for missed/skipped,
+ * or when there's no occurrence yet to ask. Deliberately just these two colors:
+ * the only ones a real use case (this feature's own motivating request) asked
+ * for -- a third for missed/skipped is an easy, low-risk follow-up if a real
+ * need for it shows up, not worth guessing a color for speculatively now. */
+function colorForOccurrenceStatus(status: string | undefined): string | null {
+  if (status === "pending") return "orange";
+  if (status === "matched") return "green";
+  return null;
+}
+
+/** A deep link into finance's own frontend for this item, so a person looking at
+ * the calendar (the "central hub") can click through to actually edit it --
+ * per CALENDAR_INTEGRATION_SPEC's "click through to the owning tracker" design
+ * (see trackstack-gateway's calendar_entries.link column). null when
+ * FINANCE_APP_URL isn't configured, same "optional, silently absent" spirit as
+ * the calendar push itself. */
+function recurringItemLink(itemId: number): string | null {
+  const base = process.env.FINANCE_APP_URL;
+  return base ? `${base}/recurring?item=${itemId}` : null;
+}
+
 /** null for an item that shouldn't be on the calendar at all right now (paused, or an
  * unconfirmed Plaid suggestion nobody has accepted yet -- a plain forecast until then). */
-export function calendarEntryForItem(item: RecurringItem): CalendarEntryInput | null {
+export async function calendarEntryForItem(item: RecurringItem): Promise<CalendarEntryInput | null> {
   if (!item.isActive || !item.confirmed) return null;
   const window = windowFor(item.nextExpectedDate, item.windowBeforeDays, item.windowAfterDays);
+  const [occurrence] = await db
+    .select({ status: recurringItemOccurrences.status })
+    .from(recurringItemOccurrences)
+    .where(and(eq(recurringItemOccurrences.recurringItemId, item.id), eq(recurringItemOccurrences.expectedDate, item.nextExpectedDate)));
   return {
     owner_type: "recurring_item",
     owner_id: String(item.id),
@@ -67,16 +95,19 @@ export function calendarEntryForItem(item: RecurringItem): CalendarEntryInput | 
     amount: item.expectedAmount,
     label: item.label,
     occurred_at: `${window.start}T00:00:00.000Z`,
+    color: colorForOccurrenceStatus(occurrence?.status),
+    link: recurringItemLink(item.id),
     metadata: { window_start: window.start, window_end: window.end, cadence: item.cadence },
   };
 }
 
 /** Upserts the item's current forecast, or removes it (paused/unconfirmed/deleted) -- call
  * after any write that could change what's on the calendar for this item: create, edit,
- * pause/resume, delete, and the scheduled sync's own date rollover. Fire-and-forget: never
- * throws, and a missing/unreachable calendar is simply a no-op (see pushCalendarEntry). */
+ * pause/resume, delete, a match/miss/manual-completion, and the scheduled sync's own date
+ * rollover. Fire-and-forget: never throws, and a missing/unreachable calendar is simply a
+ * no-op (see pushCalendarEntry). */
 export async function syncItemToCalendar(authorization: string | undefined, item: RecurringItem): Promise<void> {
-  const entry = calendarEntryForItem(item);
+  const entry = await calendarEntryForItem(item);
   await pushCalendarEntry(authorization, entry ?? removalEntry(item.id));
 }
 
@@ -132,7 +163,7 @@ export async function materializeOccurrences(userId: number, today: string, auth
 
 // ── 3. match ────────────────────────────────────────────────────────────────
 
-export async function matchOccurrences(userId: number, today: string): Promise<{ matched: number; missed: number }> {
+export async function matchOccurrences(userId: number, today: string, authorization?: string): Promise<{ matched: number; missed: number }> {
   const pending = await db
     .select({ occ: recurringItemOccurrences, item: recurringItems })
     .from(recurringItemOccurrences)
@@ -183,11 +214,18 @@ export async function matchOccurrences(userId: number, today: string): Promise<{
 
     if (best) {
       claimed.add(best.transaction.id);
-      await db
+      const [row] = await db
         .update(recurringItemOccurrences)
         .set({ status: "matched", matchedOwnerType: "transaction", matchedOwnerId: best.transaction.id, matchedAt: new Date(), matchScore: best.composite })
-        .where(and(eq(recurringItemOccurrences.id, occ.id), eq(recurringItemOccurrences.status, "pending"))); // never overwrite a concurrent run's result
-      matched++;
+        .where(and(eq(recurringItemOccurrences.id, occ.id), eq(recurringItemOccurrences.status, "pending"))) // never overwrite a concurrent run's result
+        .returning({ id: recurringItemOccurrences.id });
+      if (row) {
+        matched++;
+        // A real transaction just satisfied this occurrence -- the automation
+        // half of "orange while pending, green once done" (the other half is
+        // markOccurrenceDoneManually, for a person marking its to-do done by hand).
+        if (occ.expectedDate === item.nextExpectedDate) await syncItemToCalendar(authorization, item);
+      }
     } else if (addDays(window.end, POSTING_SLACK_DAYS) < today) {
       await db
         .update(recurringItemOccurrences)
@@ -197,6 +235,64 @@ export async function matchOccurrences(userId: number, today: string): Promise<{
     }
   }
   return { matched, missed };
+}
+
+// ── manual completion, from todo-tracker's own PATCH /todos/:id ─────────────
+
+/**
+ * Called back by todo-tracker the moment a person marks one of THIS tracker's
+ * to-dos done/reopened on the front page -- see workspace-notes' "Cross-Tracker
+ * Actions" write-up on this being the reverse direction of the usual sync
+ * (todo-tracker -> finance, not finance -> todo-tracker), and CLAUDE.md's
+ * calendar-CRUD design ("option 1"): the owning tracker updates its own entry,
+ * rather than a generic edit surface on the calendar itself.
+ *
+ * Only ever touches an occurrence this exact todoId belongs to, scoped to the
+ * caller's own userId (the join is the ownership check). Marking done only
+ * moves a `pending` occurrence to `matched` (matchedOwnerType: "manual" --
+ * a new value alongside "transaction", not a real transaction, so
+ * matchOccurrences's own claimed-transactions query, which filters
+ * matchedOwnerType = "transaction", is untouched by this). Reopening only
+ * reverts a `manual` match back to `pending` -- never a real transaction
+ * match, which a checkbox on a to-do has no business undoing. Both branches
+ * are no-ops (not errors) outside those exact transitions, since todo-tracker
+ * can't know an occurrence's state ahead of calling this.
+ *
+ * Returns the occurrence's owning item (to compute a fresh calendar push
+ * from) and whether anything actually changed, or null if this todoId isn't
+ * one of this user's recurring-item occurrences at all.
+ */
+export async function markOccurrenceDoneManually(
+  userId: number,
+  todoId: number,
+  done: boolean,
+  authorization: string | undefined
+): Promise<{ item: RecurringItem; changed: boolean } | null> {
+  const [found] = await db
+    .select({ occ: recurringItemOccurrences, item: recurringItems })
+    .from(recurringItemOccurrences)
+    .innerJoin(recurringItems, eq(recurringItemOccurrences.recurringItemId, recurringItems.id))
+    .where(and(eq(recurringItemOccurrences.todoId, todoId), eq(recurringItems.userId, userId)));
+  if (!found) return null;
+  const { occ, item } = found;
+
+  let changed = false;
+  if (done && occ.status === "pending") {
+    await db
+      .update(recurringItemOccurrences)
+      .set({ status: "matched", matchedOwnerType: "manual", matchedOwnerId: null, matchedAt: new Date(), todoClosedAt: new Date() })
+      .where(and(eq(recurringItemOccurrences.id, occ.id), eq(recurringItemOccurrences.status, "pending")));
+    changed = true;
+  } else if (!done && occ.status === "matched" && occ.matchedOwnerType === "manual") {
+    await db
+      .update(recurringItemOccurrences)
+      .set({ status: "pending", matchedOwnerType: null, matchedOwnerId: null, matchedAt: null, todoClosedAt: null })
+      .where(and(eq(recurringItemOccurrences.id, occ.id), eq(recurringItemOccurrences.status, "matched")));
+    changed = true;
+  }
+
+  if (changed && occ.expectedDate === item.nextExpectedDate) await syncItemToCalendar(authorization, item);
+  return { item, changed };
 }
 
 // ── 4. todos ────────────────────────────────────────────────────────────────
@@ -358,7 +454,7 @@ export function todoClientFor(authorization: string | undefined): { client: Todo
  */
 export async function syncAfterSave(userId: number, today: string, authorization: string | undefined): Promise<TodoSyncSummary | null> {
   try {
-    await matchOccurrences(userId, today);
+    await matchOccurrences(userId, today, authorization);
     const { client, reason } = todoClientFor(authorization);
     return await syncTodos(userId, today, client, reason);
   } catch {
@@ -407,7 +503,7 @@ export async function runRecurringSync(userId: number, opts: RecurringSyncOption
 
   await step("plaid", async () => { summary.plaid = await syncPlaidSuggestions(userId, opts.today, opts.plaid); });
   await step("occurrences", async () => { summary.occurrences = await materializeOccurrences(userId, opts.today, opts.authorization); });
-  await step("match", async () => { Object.assign(summary, await matchOccurrences(userId, opts.today)); });
+  await step("match", async () => { Object.assign(summary, await matchOccurrences(userId, opts.today, opts.authorization)); });
   await step("todos", async () => { summary.todos = await syncTodos(userId, opts.today, opts.todoClient, opts.noTodoClientReason); });
   return summary;
 }

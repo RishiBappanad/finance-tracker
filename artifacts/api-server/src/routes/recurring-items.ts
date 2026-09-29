@@ -15,7 +15,7 @@ import { db, recurringItems, recurringItemOccurrences, logDomainEvent, type Recu
 import { and, desc, eq, inArray, isNull, gte } from "drizzle-orm";
 import { addDays, nextExpectedDate, renderTodo, todayUtc, windowFor, isDateString } from "../lib/recurrence.js";
 import { checkItemConsistency, parseItemFields, parseTodoConfig, type ItemFields } from "../lib/recurring-validation.js";
-import { materializeOccurrences, syncAfterSave, syncItemToCalendar, removeItemFromCalendar } from "../services/recurring-sync.js";
+import { materializeOccurrences, syncAfterSave, syncItemToCalendar, removeItemFromCalendar, markOccurrenceDoneManually } from "../services/recurring-sync.js";
 
 const router = Router();
 
@@ -250,6 +250,24 @@ router.post("/:id/occurrences/:occurrenceId/skip", async (req, res) => {
     .returning();
   if (!row) return void res.status(404).json({ error: "No pending occurrence with that id" });
   res.json(serializeOccurrence(row));
+});
+
+// PATCH /recurring-items/occurrences/by-todo/:todoId -- called by todo-tracker, never a
+// person directly, the moment it marks one of THIS tracker's to-dos done/reopened on the
+// front page (see services/recurring-sync.ts's markOccurrenceDoneManually for the full
+// design). { done: boolean }. 404 when todoId isn't one of the caller's own recurring-item
+// occurrences at all (ownership-scoped); a done/reopen that doesn't apply to the
+// occurrence's current state is a 200 no-op, not an error, since the caller can't know
+// that ahead of time.
+router.patch("/occurrences/by-todo/:todoId", async (req, res) => {
+  const userId = req.user!.userId;
+  const todoId = Number(req.params.todoId);
+  if (!Number.isInteger(todoId)) return void res.status(400).json({ error: "todoId must be an integer" });
+  if (typeof req.body?.done !== "boolean") return void res.status(400).json({ error: "done (boolean) is required" });
+
+  const result = await markOccurrenceDoneManually(userId, todoId, req.body.done, req.headers.authorization);
+  if (!result) return void res.status(404).json({ error: "No recurring-item occurrence for that to-do" });
+  res.json({ changed: result.changed, ...(await respondWithItem(userId, result.item.id)) });
 });
 
 export default router;

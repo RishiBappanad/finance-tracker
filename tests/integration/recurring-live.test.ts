@@ -355,6 +355,59 @@ describe("the to-do hand-off", () => {
   });
 });
 
+describe("calendar color (orange/pending, green/matched) and the manual-completion callback", () => {
+  it("pushes orange while pending, green once a real transaction matches", async () => {
+    const item = (await createItem({ label: `Color Match ${RUN}`, cadence: "monthly", anchor_date: today, expected_amount: 55 })).body;
+    expect(calendarPushFor(item.id).at(-1)!.body.color).toBe("orange");
+
+    calendarPushes.length = 0;
+    await logTransaction("Color Match Co", 55, today);
+    await runSync();
+    expect(calendarPushFor(item.id).at(-1)!.body.color).toBe("green");
+  });
+
+  it("PATCH /recurring-items/occurrences/by-todo/:todoId marks an occurrence done (green) and reopens it (orange), the same call todo-tracker itself makes", async () => {
+    const item = (await createItem({ label: `Manual Done ${RUN}`, cadence: "monthly", anchor_date: today, todo_config: {} })).body;
+    const occ = (await occurrencesOf(item.id)).find((o) => o.expected_date === today)!;
+    expect(occ.todo_id).not.toBeNull();
+    expect(calendarPushFor(item.id).at(-1)!.body.color).toBe("orange");
+
+    calendarPushes.length = 0;
+    const done = await request(app).patch(`/api/recurring-items/occurrences/by-todo/${occ.todo_id}`).set(headers).send({ done: true });
+    expect(done.status).toBe(200);
+    expect(done.body.changed).toBe(true);
+    expect(calendarPushFor(item.id).at(-1)!.body.color).toBe("green");
+
+    // A second "done" is a no-op, not an error -- todo-tracker can't know the
+    // occurrence's current state ahead of calling this.
+    calendarPushes.length = 0;
+    const doneAgain = await request(app).patch(`/api/recurring-items/occurrences/by-todo/${occ.todo_id}`).set(headers).send({ done: true });
+    expect(doneAgain.body.changed).toBe(false);
+    expect(calendarPushFor(item.id)).toHaveLength(0);
+
+    const reopened = await request(app).patch(`/api/recurring-items/occurrences/by-todo/${occ.todo_id}`).set(headers).send({ done: false });
+    expect(reopened.body.changed).toBe(true);
+    expect(calendarPushFor(item.id).at(-1)!.body.color).toBe("orange");
+  });
+
+  it("never reopens a REAL transaction match -- a to-do checkbox has no business undoing that", async () => {
+    const item = (await createItem({ label: `Real Match Stays ${RUN}`, cadence: "monthly", anchor_date: today, expected_amount: 33, todo_config: {} })).body;
+    const occ = (await occurrencesOf(item.id)).find((o) => o.expected_date === today)!;
+    await logTransaction("Real Match Co", 33, today);
+    await runSync();
+    expect((await occurrencesOf(item.id)).find((o) => o.expected_date === today)!.status).toBe("matched");
+
+    const reopenAttempt = await request(app).patch(`/api/recurring-items/occurrences/by-todo/${occ.todo_id}`).set(headers).send({ done: false });
+    expect(reopenAttempt.body.changed).toBe(false);
+    expect((await occurrencesOf(item.id)).find((o) => o.expected_date === today)!.status).toBe("matched");
+  });
+
+  it("404s for a todoId that isn't one of the caller's own recurring-item occurrences", async () => {
+    const res = await request(app).patch(`/api/recurring-items/occurrences/by-todo/999999999`).set(headers).send({ done: true });
+    expect(res.status).toBe(404);
+  });
+});
+
 describe("editing", () => {
   it("changing the range or cadence rebuilds not-yet-sent occurrences; sent ones stay", async () => {
     const item = (await createItem({ label: `Edit ${RUN}`, cadence: "monthly", anchor_date: today, window_after_days: 1 })).body;
