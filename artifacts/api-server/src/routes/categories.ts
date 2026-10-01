@@ -55,11 +55,7 @@ router.post("/", async (req, res) => {
     });
   } catch (e: any) {
     // Drizzle wraps the underlying pg driver error -- the real Postgres
-    // error code lives at e.cause.code, not e.code (confirmed by hitting
-    // this for real: e.code was undefined, e.cause.code was "23505").
-    // This check was previously looking at the wrong property and could
-    // never have fired, but went unnoticed because user_categories had no
-    // unique constraint at all until this same change added one.
+    // error code lives at e.cause.code, not e.code.
     if (e.cause?.code === "23505") {
       return void res.status(409).json({ error: "Category already exists" });
     }

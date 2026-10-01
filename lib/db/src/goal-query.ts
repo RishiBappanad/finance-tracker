@@ -328,10 +328,8 @@ export function resolveTimeWindow(tw: TimeWindow, now: Date = new Date()): DateR
   // (new Date(8_640_000_000_000_000), year ~275760): that value round-trips
   // fine through plain JS but Postgres's timestamptz parser rejects the
   // 6-digit-year ISO string node-postgres serializes it as ("time zone
-  // displacement out of range"). Found live 2026-09-27 -- this branch had
-  // no real caller evaluating an all_time-measured goal until Long-Term
-  // goals' start_value auto-snapshot became the first one. Same upper
-  // bound nutrition-insights' own copy of this function already uses.
+  // displacement out of range"). Same upper bound nutrition-insights' own
+  // copy of this function already uses.
   return [{ from: new Date(0), to: new Date(Date.UTC(9999, 0, 1)) }];
 }
 
@@ -339,9 +337,9 @@ export function resolveTimeWindow(tw: TimeWindow, now: Date = new Date()): DateR
 
 /** domain_events is an append-only CRUD log (EVENT_CONTRACT_SPEC.md) -- a
  * row per create/update/delete, not one row per owner. Summing `amount`
- * directly over it double-counts every owner that's ever been edited
- * more than once (confirmed live 2026-09-19: a single $60 transaction,
- * PATCHed twice, summed to $120). The fix is a CTE that collapses each
+ * directly over it double-counts every owner that's ever been edited more
+ * than once (e.g. a single $60 transaction, PATCHed twice, would sum to
+ * $120). The fix is a CTE that collapses each
  * CRUD-tracked owner (event_type ending in _created/_updated/_deleted --
  * see logDomainEvent's closed `action` union in domain-events.ts) down
  * to its single latest row, dropping owners whose latest row is a
@@ -481,10 +479,10 @@ export async function evaluateGoalQuery(
  * transaction OUT of a filtered category is exactly as goal-relevant as
  * moving one IN, but the event's own fields can't tell those apart from
  * "never matched at all" without knowing the PRIOR state, which this
- * cheap check deliberately doesn't query for. Confirmed live 2026-09-19:
- * recategorizing a transaction away from a goal's filtered category
- * never re-evaluated that goal, so a goal_exceeded state could never
- * clear back to goal_met once the offending transaction was corrected.
+ * cheap check deliberately doesn't query for -- without this fallthrough,
+ * recategorizing a transaction away from a goal's filtered category would
+ * never re-evaluate that goal, so a goal_exceeded state could never clear
+ * back to goal_met once the offending transaction was corrected.
  * `created`/`deleted` don't have this ambiguity -- a newly-created row's
  * only state IS its current fields (nothing to have "moved away" from),
  * and a deleted row's event carries its final state right before removal

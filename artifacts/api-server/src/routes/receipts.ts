@@ -77,8 +77,6 @@ async function getMatchMap(receiptIds: number[]) {
   return new Map(matchRows.map((m) => [m.receiptId, m.id]));
 }
 
-// SECURITY FIX (2026-08-27): no user filter at all -- returned every
-// user's expiring-return receipts to any authenticated caller.
 router.get("/expiring", async (req, res) => {
   const parsed = ListExpiringReceiptsQueryParams.safeParse(req.query);
   const days = parsed.success && parsed.data.days != null ? parsed.data.days : 14;
@@ -104,9 +102,6 @@ router.get("/expiring", async (req, res) => {
   res.json(rows.map((r) => serializeReceipt(r, mm.get(r.id))));
 });
 
-// SECURITY FIX (2026-08-27): no user filter -- returned every user's
-// unmatched receipts to any caller. The frontend's Reconcile page calls
-// this directly (useListUnmatchedReceipts) -- confirmed exploited.
 router.get("/unmatched", async (req, res) => {
   const userId = req.user!.userId;
   const matched = db
@@ -122,9 +117,6 @@ router.get("/unmatched", async (req, res) => {
   res.json(rows.map((r) => serializeReceipt(r)));
 });
 
-// SECURITY FIX (2026-08-27): no user filter at all -- this is the
-// frontend's primary Receipts page list; returned every user's receipts
-// to every other authenticated user. Confirmed exploited.
 router.get("/", async (req, res) => {
   const parsed = ListReceiptsQueryParams.safeParse(req.query);
   const params = parsed.success ? parsed.data : {};
@@ -213,10 +205,9 @@ router.post("/scan", upload.single("file"), async (req, res) => {
   }
 });
 
-// GET /receipts/categories — same category list transactions use (defaults +
-// user-created). Receipt items used to have their own separate, differently
-// named list (e.g. "Gas" vs transactions' "Gas & Fuel") that never matched
-// anything cash-flow reporting understood — this is the single shared list.
+// GET /receipts/categories — the single category list shared with
+// transactions (defaults + user-created); receipt items and transactions
+// must use the same names so cash-flow reporting can aggregate across both.
 router.get("/categories", async (_req, res) => {
   res.json(await getAllCategoryNames());
 });
@@ -287,10 +278,8 @@ router.post("/confirm", async (req, res) => {
   });
 
   // Immediately try to match this receipt against the user's own unmatched
-  // bank transactions — previously the only way a receipt got matched was a
-  // separate manual trip to the Reconcile page (or its bulk "run" button),
-  // so a receipt Gemini just parsed sat unmatched until the user remembered
-  // to go do that. auto_matched creates a real match row; needs_review
+  // bank transactions, rather than leaving it to sit until the user visits
+  // Reconcile manually. auto_matched creates a real match row; needs_review
   // candidates are returned as suggestions for the frontend to show without
   // committing to anything the user hasn't confirmed.
   const { outcome, createdMatch } = await reconcileOneReceipt(
@@ -401,9 +390,6 @@ router.get("/:receiptId", async (req, res) => {
 // receipt detail page show candidate transactions for the user to pick from
 // when the automatic match at confirm-time didn't reach auto_matched
 // confidence.
-// SECURITY FIX (2026-08-27): no ownership check -- any user could pull
-// match suggestions (and thereby the receipt's own total/date/store) for
-// any other user's receipt by guessing receiptId.
 router.get("/:receiptId/suggestions", async (req, res) => {
   const id = Number(req.params.receiptId);
   const [row] = await db.select().from(scannedReceipts)
@@ -436,10 +422,8 @@ router.get("/:receiptId/suggestions", async (req, res) => {
   });
 });
 
-// SECURITY FIX (2026-08-27): no ownership check -- any authenticated user
-// could EDIT any other user's receipt by guessing receiptId. The update
-// itself is now scoped by (id AND userId), so a mismatched owner simply
-// updates zero rows -> 404, rather than trusting the id alone.
+// Scoped by (id AND userId) in the update itself, so a mismatched owner
+// simply updates zero rows -> 404, rather than trusting the id alone.
 router.patch("/:receiptId", async (req, res) => {
   const id = Number(req.params.receiptId);
   const parsed = UpdateReceiptBody.safeParse(req.body);
@@ -483,8 +467,6 @@ router.patch("/:receiptId", async (req, res) => {
   res.json(serializeReceipt(row, match[0]?.id ?? null));
 });
 
-// SECURITY FIX (2026-08-27): no ownership check -- any authenticated user
-// could DELETE any other user's receipt by guessing receiptId.
 router.delete("/:receiptId", async (req, res) => {
   const [deleted] = await db.delete(scannedReceipts)
     .where(and(eq(scannedReceipts.id, Number(req.params.receiptId)), eq(scannedReceipts.userId, req.user!.userId)))
@@ -501,9 +483,6 @@ router.delete("/:receiptId", async (req, res) => {
   res.status(204).send();
 });
 
-// SECURITY FIX (2026-08-27): no ownership check -- any authenticated user
-// could list line items for any other user's receipt by guessing
-// receiptId.
 router.get("/:receiptId/items", async (req, res) => {
   const receiptId = Number(req.params.receiptId);
   if (!(await receiptBelongsToUser(receiptId, req.user!.userId))) {
@@ -518,9 +497,6 @@ router.get("/:receiptId/items", async (req, res) => {
   res.json(items);
 });
 
-// SECURITY FIX (2026-08-27): no ownership check -- any authenticated user
-// could add a line item to any other user's receipt by guessing
-// receiptId.
 router.post("/:receiptId/items", async (req, res) => {
   const receiptId = Number(req.params.receiptId);
   if (!(await receiptBelongsToUser(receiptId, req.user!.userId))) {
@@ -552,12 +528,7 @@ router.post("/:receiptId/items", async (req, res) => {
 });
 
 // PATCH /receipts/:receiptId/items/:itemId — edit a line item after the
-// receipt has been saved (most commonly: re-assign its category). The
-// confirm-time flow was the only way to set an item's category before this;
-// there was no way to fix a miscategorized item afterward.
-// SECURITY FIX (2026-08-27): no ownership check -- any authenticated user
-// could edit a line item on any other user's receipt by guessing
-// receiptId/itemId.
+// receipt has been saved (most commonly: re-assign its category).
 router.patch("/:receiptId/items/:itemId", async (req, res) => {
   if (!(await receiptBelongsToUser(Number(req.params.receiptId), req.user!.userId))) {
     return void res.status(404).json({ error: "Item not found" });

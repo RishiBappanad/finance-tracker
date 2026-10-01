@@ -5,11 +5,9 @@ import { setAuthTokenGetter } from "@workspace/api-client-react";
 
 // Identity (registration, login, Google OAuth) is owned by trackstack-auth,
 // not this app's own backend -- login/register/logout/token storage are
-// delegated to trackstack-ui's shared useTrackStackAuth (previously
-// hand-rolled here independently; see workspace-notes/ACTION_ITEMS.md's
-// cross-repo duplication scan, 2026-09-10, for why). /me still calls this
-// app's own API (kept locally -- see routes/auth.ts) to fetch this app's
-// view of the current user's profile without an extra network hop --
+// delegated to trackstack-ui's shared useTrackStackAuth. /me still calls
+// this app's own API (kept locally -- see routes/auth.ts) to fetch this
+// app's view of the current user's profile without an extra network hop --
 // that verification-on-mount layer is finance-specific and stays here,
 // not pushed into the shared hook.
 const TRACKSTACK_AUTH_URL = import.meta.env.VITE_TRACKSTACK_AUTH_URL ?? "";
@@ -44,11 +42,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setAuthTokenGetter(() => auth.token);
   }, [auth.token]);
 
-  // Verify token on mount -- deliberately still a mount-only check (empty
-  // deps, same as before this migration), not re-run on every auth.token
-  // change: login()/register() below already populate `user` directly
-  // from the response's `account`, so re-verifying via /me on that same
-  // token change would just be a redundant round-trip.
+  // Verify token on mount -- deliberately a mount-only check (empty deps),
+  // not re-run on every auth.token change: login()/register() below
+  // already populate `user` directly from the response's `account`, so
+  // re-verifying via /me on that same token change would just be a
+  // redundant round-trip.
   //
   // When there's no local token, try single sign-on before giving up and
   // showing the login page: trackstack-auth's own session cookie may

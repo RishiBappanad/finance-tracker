@@ -3,11 +3,11 @@
  *
  * A transaction has exactly one userCategory, but a matched, itemized
  * receipt can have several items each in a different category (e.g. one
- * Target run: groceries + a phone case + shampoo). Before this, cash-flow
- * totals only ever knew about the whole-transaction category, so an
- * itemized receipt's categorization was invisible to reporting — the
- * pie chart and category totals always showed 100% of the transaction
- * under one bucket, even if the user had carefully categorized each item.
+ * Target run: groceries + a phone case + shampoo). Without this, cash-flow
+ * totals would only know about the whole-transaction category, so an
+ * itemized receipt's categorization would be invisible to reporting — the
+ * pie chart and category totals would show 100% of the transaction under
+ * one bucket, even when the user carefully categorized each item.
  *
  * This splits a transaction's amount across its matched receipt's item
  * categories, proportional to each item's lineTotal, and falls back to the
@@ -15,14 +15,11 @@
  * (the common case — most transactions have no receipt at all).
  *
  * Uncategorized spend gets its own "Uncategorized" bucket, distinct from
- * "Other" (a real, selectable category someone might pick on purpose). The
- * previous version of this aggregation excluded uncategorized transactions
- * entirely (WHERE userCategory IS NOT NULL) — this surfaces them instead,
- * since money that was never categorized shouldn't silently vanish from a
+ * "Other" (a real, selectable category someone might pick on purpose) --
+ * money that was never categorized shouldn't silently vanish from a
  * spending report.
  *
- * Lives in lib/db (moved from artifacts/api-server/src/lib/ 2026-09-17)
- * rather than the app layer -- Goals' event-triggered evaluation
+ * Lives in lib/db rather than the app layer -- Goals' event-triggered evaluation
  * (goals-evaluation.ts, called from domain-events.ts's logDomainEvent)
  * needs this same computation, and that call site is inside this
  * package. Takes `db` as an explicit parameter, the same DI style

@@ -29,11 +29,7 @@ function serializeMatch(m: any) {
 }
 
 // POST /reconcile — run auto-reconciliation for the current user's own
-// receipts and transactions only. (Previously this queried unmatched
-// receipts/transactions with no user filter at all — any user's receipt
-// could have been auto-matched against another user's bank transaction.
-// Fixed alongside wiring auto-match into POST /receipts/confirm, since
-// both paths needed the same user-scoped transaction lookup.)
+// receipts and transactions only.
 router.post("/run", async (req, res) => {
   const userId = req.user!.userId;
 
@@ -154,8 +150,6 @@ async function matchBelongsToUser(matchId: number, userId: number): Promise<bool
   return rows.length > 0;
 }
 
-// SECURITY FIX (2026-08-27): no user filter -- returned every user's
-// matches to any authenticated caller.
 router.get("/", async (req, res) => {
   const parsed = ListMatchesQueryParams.safeParse(req.query);
   const params = parsed.success ? parsed.data : {};
@@ -183,11 +177,9 @@ router.get("/", async (req, res) => {
   res.json(rows.map(serializeMatch));
 });
 
-// SECURITY FIX (2026-08-27): no ownership validation on either side of
-// the match -- a user could link their own receipt to someone ELSE's
-// bank transaction (or vice versa), splicing another user's financial
-// data into their own reconciliation view. Both must belong to the
-// caller before a manual match is allowed.
+// Both the receipt and the bank transaction must belong to the caller --
+// otherwise a user could splice another user's financial data into their
+// own reconciliation view by matching against an id they don't own.
 router.post("/", async (req, res) => {
   const parsed = CreateMatchBody.safeParse(req.body);
   if (!parsed.success) return void res.status(400).json({ error: "Invalid input" });
@@ -220,8 +212,6 @@ router.post("/", async (req, res) => {
   res.status(201).json(serializeMatch(match));
 });
 
-// SECURITY FIX (2026-08-27): no ownership check -- any authenticated
-// user could confirm/unconfirm any other user's match.
 router.patch("/:matchId", async (req, res) => {
   const matchId = Number(req.params.matchId);
   if (!(await matchBelongsToUser(matchId, req.user!.userId))) {
@@ -253,8 +243,6 @@ router.patch("/:matchId", async (req, res) => {
   res.json(serializeMatch(row));
 });
 
-// SECURITY FIX (2026-08-27): no ownership check -- any authenticated
-// user could delete any other user's match.
 router.delete("/:matchId", async (req, res) => {
   const matchId = Number(req.params.matchId);
   if (!(await matchBelongsToUser(matchId, req.user!.userId))) {

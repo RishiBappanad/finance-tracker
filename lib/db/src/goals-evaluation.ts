@@ -1,28 +1,27 @@
 /**
  * Goal evaluation -- per workspace-notes/RECURRING_AND_GOALS_SPEC.md's
- * "Goals" section (2026-09-17 generalized model), a goal compares a
- * `measure` GoalQuery against a `reference` (a constant or itself a
- * GoalQuery) via `comparator`. This module owns comparator logic,
- * inflation adjustment of a computed reference value, and the event-
- * triggered before/after transition check -- the actual query
- * evaluation itself lives in goal-query.ts (the reusable interpreter).
+ * "Goals" section, a goal compares a `measure` GoalQuery against a
+ * `reference` (a constant or itself a GoalQuery) via `comparator`. This
+ * module owns comparator logic, inflation adjustment of a computed
+ * reference value, and the event-triggered before/after transition check --
+ * the actual query evaluation itself lives in goal-query.ts (the reusable
+ * interpreter).
  *
- * No persisted evaluation state: unlike the superseded 43c454b design,
- * this table is pure definition (see schema/goals.ts) -- both sides of a
- * transition check are computed live, every time, by re-running the
- * measure/reference queries with and without the just-inserted event.
+ * No persisted evaluation state: the `goals` table is pure definition (see
+ * schema/goals.ts) -- both sides of a transition check are computed live,
+ * every time, by re-running the measure/reference queries with and without
+ * the just-inserted event.
  *
  * Lives in lib/db, not the app layer, specifically so domain-events.ts's
  * logDomainEvent() can call evaluateGoalsForEvent() directly after every
  * write, all within the one module boundary tests/helpers/db-mock.ts
- * already mocks as a unit -- an app-layer wrapper around logDomainEvent
- * was tried first (for the superseded design) and reverted: it ran
- * outside that mock boundary, so its extra `goals` table lookup silently
- * consumed queue slots meant for each mocked test's own next query,
- * breaking tests across the app's mock-based suite that had nothing to
- * do with Goals. Living here means db-mock.ts's existing no-op mock of
- * this exact function continues to fully replace this behavior in every
- * such test, with zero changes needed to any of them.
+ * already mocks as a unit. An app-layer wrapper around logDomainEvent would
+ * run outside that mock boundary, so its extra `goals` table lookup would
+ * silently consume queue slots meant for each mocked test's own next
+ * query, breaking tests across the app's mock-based suite that have
+ * nothing to do with Goals. Living here means db-mock.ts's existing no-op
+ * mock of this exact function fully replaces this behavior in every such
+ * test, with zero changes needed to any of them.
  */
 import { eq, and } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";

@@ -1,13 +1,11 @@
-// Single source of truth for category display colors. dashboard.tsx and
-// spending/index.tsx each used to hardcode their own independent copy of
-// this map -- dashboard's covered only 8 of the 19 real categories and had
-// already drifted from spending's (e.g. missing "Gas & Fuel"), so the same
-// category silently rendered a different color depending which page you
-// were on. The category names themselves still come from the backend (see
-// useListReceiptCategories / GET /transactions/categories,
-// lib/categories.ts's getAllCategoryNames) -- this only maps a known name to
-// a color; a category not listed here (including any user-created one,
-// which can't have a color known ahead of time) falls back to DEFAULT_COLOR.
+// Single source of truth for category display colors, used by every page
+// that renders a category badge (dashboard, spending, etc.) so the same
+// category always renders the same color everywhere. The category names
+// themselves still come from the backend (see useListReceiptCategories /
+// GET /transactions/categories, lib/categories.ts's getAllCategoryNames) --
+// this only maps a known name to a color; a category not listed here
+// (including any user-created one, which can't have a color known ahead of
+// time) falls back to DEFAULT_COLOR.
 export const CATEGORY_COLORS: Record<string, string> = {
   "Food & Dining": "#ef4444",
   "Groceries": "#f97316",

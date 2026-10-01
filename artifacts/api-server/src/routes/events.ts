@@ -1,11 +1,11 @@
 /**
- * TrackStack Universal Event Contract adapter -- as of 2026-09-15, backed
- * by the real `domain_events` log (see lib/db/src/domain-events.ts) rather
- * than deriving events live from bank_transactions' current rows. Mirrors
- * nutrition-insights' app/routers/events.py structurally (same
- * _query_events-shared-by-both-GET-endpoints pattern, same
- * occurred_at/logged_at split), not literally -- finance's real schema and
- * category model are different enough that this isn't a port.
+ * TrackStack Universal Event Contract adapter -- backed by the real
+ * `domain_events` log (see lib/db/src/domain-events.ts), not derived live
+ * from bank_transactions' current rows. Mirrors nutrition-insights'
+ * app/routers/events.py structurally (same _query_events-shared-by-both-
+ * GET-endpoints pattern, same occurred_at/logged_at split), not literally --
+ * finance's real schema and category model are different enough that this
+ * isn't a port.
  *
  * Deliberately an ADDITIONAL layer, not a replacement for
  * routes/transactions.ts, which stays exactly as it is and remains the
@@ -265,11 +265,10 @@ eventsRouter.get("/", async (req, res) => {
     return void res.status(400).json({ error: "event_type cannot be combined with view=current; filter by owner_type instead" });
   }
 
-  // No fixed event_type whitelist here (unlike the old single-type check)
-  // -- every event_type value lives in the same domain_events table now,
-  // so an unrecognized value is just a WHERE clause that matches nothing,
-  // not an error. Matches nutrition-insights' identical post-rework
-  // behavior.
+  // No fixed event_type whitelist -- every event_type value lives in the
+  // same domain_events table, so an unrecognized value is just a WHERE
+  // clause that matches nothing, not an error. Matches nutrition-insights'
+  // identical behavior.
   const events = await queryEvents(req.user!.userId, start, end, {
     eventType: event_type ?? null,
     source,

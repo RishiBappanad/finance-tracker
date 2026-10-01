@@ -34,12 +34,11 @@ const AUTH_BASE_URL = import.meta.env.VITE_TRACKSTACK_AUTH_URL ?? "";
   }
 })();
 
-// There is no local /login page anymore -- the only login UI in the
-// whole system is TrackStack Home's (per-tracker login pages were
-// scrapped 2026-09-20). Once silent SSO has been tried and there's still
-// no user, bounce the browser to Home with returnTo set to this exact
-// URL, so a successful login there sends it right back here instead of
-// dropping the user on Home's own dashboard.
+// There is no local /login page here -- the only login UI in the whole
+// system is TrackStack Home's. Once silent SSO has been tried and there's
+// still no user, bounce the browser to Home with returnTo set to this
+// exact URL, so a successful login there sends it right back here instead
+// of dropping the user on Home's own dashboard.
 function ProtectedRoutes() {
   const { user, isLoading } = useAuth();
 

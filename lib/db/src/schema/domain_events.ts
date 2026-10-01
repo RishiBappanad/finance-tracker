@@ -1,15 +1,14 @@
 import { pgTable, serial, integer, text, real, timestamp, index } from "drizzle-orm/pg-core";
 import { users } from "./users";
 
-// Universal Event Contract's actual backing store (2026-09-14) -- the
-// Drizzle/finance-tracker sibling of nutrition-insights'
-// app/db/__init__.py domain_events table (same shape, same reasoning,
-// deliberately not shared code across trackers per CLAUDE.md Tenet #1).
-// Generalizes todo-tracker's own todo_events append-only pattern across
-// every domain entity this tracker owns, replacing the previous
-// approach of GET /events deriving events live from bankTransactions'
-// current rows -- which could only ever answer "this exists right now,"
-// never "this was updated" or "this was deleted after the fact."
+// Universal Event Contract's actual backing store -- the Drizzle/finance-
+// tracker sibling of nutrition-insights' app/db/__init__.py domain_events
+// table (same shape, same reasoning, deliberately not shared code across
+// trackers per CLAUDE.md Tenet #1). Same append-only pattern as todo-
+// tracker's own todo_events, generalized across every domain entity this
+// tracker owns -- an append-only log can answer "this was updated" or
+// "this was deleted after the fact," which deriving events live from
+// bankTransactions' current rows alone never could.
 //
 // ownerId is TEXT rather than INTEGER (unlike nutrition-insights') --
 // this tracker's owning tables use a mix of PK types (bankTransactions/

@@ -30,12 +30,7 @@ function serializeTxn(t: any, matchId?: number | null) {
   };
 }
 
-// GET /transactions/ignored — list the CALLING USER's hidden/ignored
-// transactions. SECURITY FIX (2026-08-27): this previously had no user
-// filter at all -- eq(bankTransactions.ignored, true) with no join back
-// to institutions.userId, so it returned every user's ignored
-// transactions to any authenticated caller. Confirmed exploited: the
-// frontend's Transactions page calls this directly.
+// GET /transactions/ignored — list the CALLING USER's hidden/ignored transactions.
 router.get("/ignored", async (req, res) => {
   const rows = await joinTransactionOwnership(db
     .select({
@@ -62,8 +57,6 @@ router.get("/ignored", async (req, res) => {
   res.json(rows.map((r) => serializeTxn(r)));
 });
 
-// SECURITY FIX (2026-08-27): same missing-filter bug as /ignored above --
-// this returned every user's unmatched transactions to any caller.
 router.get("/unmatched", async (req, res) => {
   const userId = req.user!.userId;
   const matched = db
@@ -281,9 +274,7 @@ router.post("/sync", async (req, res) => {
   res.json({ added: totalAdded, removed: totalRemoved, updated: totalModified, accounts: allAccounts.length, errors });
 });
 
-// GET /transactions/vendors — list the CALLING USER's distinct merchant
-// names. SECURITY FIX (2026-08-27): no user filter at all -- leaked
-// every user's vendor/merchant names to any authenticated caller.
+// GET /transactions/vendors — list the CALLING USER's distinct merchant names.
 router.get("/vendors", async (req, res) => {
   const userId = req.user!.userId;
   const rows = await joinTransactionOwnership(db
@@ -324,14 +315,9 @@ router.get("/vendors", async (req, res) => {
 
 // POST /transactions/bulk-categorize — assign category to all of the
 // CALLING USER's OWN transactions from a merchant.
-// SECURITY FIX (2026-08-27): this previously updated EVERY user's
-// transactions matching merchantName, with no ownership check at all --
-// any authenticated user recategorizing e.g. "Starbucks" would silently
-// rewrite every other user's Starbucks transactions too. Drizzle's
-// update().where() can't join, so ownership is enforced by first
+// Drizzle's update().where() can't join, so ownership is enforced by first
 // SELECTing the caller's own matching transaction ids (via the same
-// institutions.userId join used everywhere else), then updating only
-// those ids.
+// institutions.userId join used everywhere else), then updating only those ids.
 router.post("/bulk-categorize", async (req, res) => {
   const { merchantName, userCategory } = req.body;
   const userId = req.user!.userId;
@@ -380,9 +366,6 @@ router.post("/bulk-categorize", async (req, res) => {
 
 // POST /transactions/categorize — batch AI categorization for the CALLING
 // USER's own uncategorized transactions.
-// SECURITY FIX (2026-08-27): no user filter -- this selected and
-// AI-categorized every user's uncategorized transactions, silently
-// writing results into other users' data.
 router.post("/categorize", async (req, res) => {
   const userId = req.user!.userId;
   const uncategorized = await joinTransactionOwnership(db

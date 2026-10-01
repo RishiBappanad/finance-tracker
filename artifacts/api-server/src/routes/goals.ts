@@ -46,7 +46,7 @@ async function snapshotCurrentValue(userId: number, measureQuery: GoalQuery): Pr
 
 const router = Router();
 
-// ── Basic-goal shorthand expansion (decided 2026-09-17) ──────────────────
+// ── Basic-goal shorthand expansion ──────────────────────────────────────
 // `POST`/`PATCH /goals` accepts either the full measure_query/
 // reference_query form or a flat shorthand -- see
 // RECURRING_AND_GOALS_SPEC.md's "Basic goals stay simple" section. The
@@ -392,9 +392,9 @@ function categoryHintFor(goal: Goal): string {
 // GET /goals/status-by-category -- convenience grouping keyed by
 // measure_query.filters' category field, where present (see
 // categoryHintFor) -- lets a frontend render "warning + hard cap, both
-// evaluated" per category in one call, same purpose the old flat-schema
-// version served, adapted to the fact that "category" is no longer a
-// real column.
+// evaluated" per category in one call. "category" isn't a real column on
+// goals (it's a filter inside measure_query), so this derives the grouping
+// key from the query shape instead.
 router.get("/status-by-category", async (req, res) => {
   const rows = await db.select().from(goals).where(and(eq(goals.userId, req.user!.userId), eq(goals.isActive, true)));
 
@@ -448,7 +448,7 @@ router.get("/presets", (_req, res) => {
         reference_query: { aggregation: "mean", filters: [], timeWindow: { kind: "trailing", period: "weekly", count: 1 } },
       },
     ],
-    // Long-Term (2026-09-28): both are a plain all-time sum on whatever
+    // Long-Term presets are both a plain all-time sum on whatever
     // category the user applies them to -- no reference_query (fixed target,
     // typed in after applying, same as every Basic preset) since there's no
     // sensible computed baseline for "how much should I have saved/spent,

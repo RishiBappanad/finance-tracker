@@ -11,13 +11,11 @@ export const userCategories = pgTable(
     icon: text("icon"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
-  // Previously undeclared even though routes/categories.ts already caught
-  // a 23505 unique-violation on create as if this existed -- it didn't;
-  // confirmed via a live pg_constraint query against production, where
-  // user_categories had only a primary key and the users FK. Needed for
-  // real by the color-upsert route (onConflictDoUpdate requires an actual
-  // constraint to target), and fixes the previously-dead duplicate-name
-  // detection in POST / as a side effect.
+  // Required so onConflictDoUpdate (the color-upsert route) has an actual
+  // constraint to target, and so a duplicate-name create reliably fails
+  // with a 23505 for routes/categories.ts to catch -- application-level
+  // duplicate checks alone can't close the race between two concurrent
+  // creates of the same name.
   (t) => [unique().on(t.userId, t.name)]
 );
 

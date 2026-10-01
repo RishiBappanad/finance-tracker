@@ -16,9 +16,9 @@ env:
   REGION: us-east1
   SERVICE: trackstack-finance
   IMAGE: us-east1-docker.pkg.dev/trackstack-501915/cloud-run-source-deploy/trackstack-finance:latest
-  # Gateway cutover (2026-09-12): this service is now only meant to be
-  # reached through trackstack-gateway at /finance -- same reasoning as
-  # nutrition-insights' own deploy.yml. Backend/API unaffected (already
+  # This service is only meant to be reached through trackstack-gateway
+  # at /finance -- same reasoning as nutrition-insights' own deploy.yml.
+  # Backend/API unaffected (already
   # calls its own routes as same-origin /api/... paths).
   BASE_PATH: /finance/
   API_BASE: /finance

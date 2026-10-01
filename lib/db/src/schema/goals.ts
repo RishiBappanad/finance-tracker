@@ -7,10 +7,7 @@ import { users } from "./users";
  * GoalQuery over a different time window, `referenceQuery`) via
  * `comparator` -- see workspace-notes/RECURRING_AND_GOALS_SPEC.md's
  * "Goals" section for the full design. This is the cross-tracker-
- * standardized shape (2026-09-17); a flat `category`/`comparator`/
- * `target_amount`/`period` shape shipped once (43c454b) and was
- * superseded before any tracker other than finance-tracker adopted it --
- * see that section's "Migration note".
+ * standardized shape.
  *
  * Exactly one of (referenceAmount, referenceQuery) must be non-null --
  * enforced in routes/goals.ts's validation (a Postgres CHECK spanning a
@@ -18,13 +15,12 @@ import { users } from "./users";
  * validate shapes like this in code, the same way calendarValidation.ts's
  * parsePushRequestBody does elsewhere).
  *
- * No persisted evaluation state (decided 2026-09-17, reversing an earlier
- * lastStatus/lastEvaluatedPeriodStart cache): domain_events is already a
- * complete, durable history, so "was this goal compliant a moment ago" is
- * just as cheaply computed live (goal-query.ts's evaluateGoalQuery run
- * twice, before/after) as cached -- see goals-evaluation.ts. This table
- * is pure definition: only a user's own create/update/delete/activate
- * ever writes to it; the event-triggered evaluation hot path only reads.
+ * No persisted evaluation state: domain_events is already a complete,
+ * durable history, so "was this goal compliant a moment ago" is just as
+ * cheaply computed live (goal-query.ts's evaluateGoalQuery run twice,
+ * before/after) as cached -- see goals-evaluation.ts. This table is pure
+ * definition: only a user's own create/update/delete/activate ever writes
+ * to it; the event-triggered evaluation hot path only reads.
  */
 export const goals = pgTable(
   "goals",

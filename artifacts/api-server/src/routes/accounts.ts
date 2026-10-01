@@ -8,17 +8,11 @@ import { getPlaidAdapter } from "../services/plaid.js";
 const router = Router();
 
 // POST /accounts/create-link-token — generates a Plaid Link token for the frontend.
-// SECURITY FIX (2026-08-27): client_user_id was hardcoded to the literal
-// string "local-user-1" for EVERY user of this app. Plaid uses
-// client_user_id specifically to recognize a returning user in Link --
-// with every user sharing one ID, Plaid treated every new signup as the
-// SAME person who'd connected before, and could skip phone-number entry
-// entirely, sending an OTP straight to whatever phone number was
-// already on file for that ID (the first person who ever linked a
-// bank). This is what caused a second user's Plaid Link flow to
-// silently text the first user's phone instead of prompting for their
-// own number. Fixed by using this app's own per-user id, which is what
-// every other Plaid-adjacent write in this file already scopes by.
+// client_user_id must be this app's own per-user id, not a shared constant --
+// Plaid uses it to recognize a returning user in Link, so every user sharing
+// one id would make Plaid treat each new signup as the same returning person
+// and send Link's phone-verification OTP to whatever number is already on
+// file for that id, instead of prompting for the caller's own number.
 router.post("/create-link-token", async (req, res) => {
   const { PLAID_CLIENT_ID, PLAID_SECRET, PLAID_ENV = "sandbox" } = process.env;
   if (!PLAID_CLIENT_ID || !PLAID_SECRET) {
@@ -147,10 +141,8 @@ router.post("/", async (req, res) => {
   res.status(201).json({ ...row[0], createdAt: row[0]?.createdAt?.toISOString() ?? "" });
 });
 
-// SECURITY FIX (2026-08-27): no ownership check at all -- any authenticated
-// user could view any other user's linked account by guessing/enumerating
-// accountId. leftJoin -> innerJoin since an orphaned account (no
-// institution row) can never belong to the caller anyway.
+// innerJoin, not leftJoin -- an orphaned account (no institution row) can
+// never belong to the caller, so there's no case worth keeping unmatched rows for.
 router.get("/:accountId", async (req, res) => {
   const rows = await db
     .select({
@@ -173,9 +165,7 @@ router.get("/:accountId", async (req, res) => {
   res.json({ ...rows[0], createdAt: rows[0].createdAt?.toISOString() ?? "" });
 });
 
-// SECURITY FIX (2026-08-27): no ownership check -- any authenticated user
-// could delete any other user's linked bank account. Verify ownership
-// first (same join as GET /:accountId above) before deleting.
+// Ownership verified via the same join as GET /:accountId above before deleting.
 router.delete("/:accountId", async (req, res) => {
   const owned = await db
     .select({ id: accounts.id, name: accounts.name, type: accounts.type, subtype: accounts.subtype })

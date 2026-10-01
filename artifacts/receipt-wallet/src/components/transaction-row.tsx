@@ -65,11 +65,9 @@ interface TransactionRowProps {
   showMatchIcon?: boolean;
   // Offers an "Apply to all" action next to the category picker, letting
   // the user opt into bulk-assigning this category to every transaction
-  // from the same merchant. Previously this was a required AlertDialog
-  // interrupting every single category change ("Just this one" / "Apply
-  // to all") -- replaced with a plain button the user clicks only when
-  // they actually want the bulk behavior, per explicit user feedback that
-  // the forced prompt was annoying.
+  // from the same merchant -- a plain button clicked only when the bulk
+  // behavior is actually wanted, rather than an AlertDialog interrupting
+  // every single category change.
   showBulkApply?: boolean;
 
   // Callbacks
