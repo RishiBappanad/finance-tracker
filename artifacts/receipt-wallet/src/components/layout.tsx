@@ -3,9 +3,10 @@ import { Link, useLocation } from "wouter";
 import { LayoutDashboard, Receipt, ArrowLeftRight, Building2, Wallet, PieChart, Target, LogOut, Menu, X, Repeat } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/use-auth";
-import { AppSwitcher, MobileAppSwitcher } from "trackstack-ui";
+import { AppSwitcher, MobileAppSwitcher, ICON_COMPONENTS, usePinnedTrackers, useAppRegistry } from "trackstack-ui";
 
 const TRACKSTACK_AUTH_URL = import.meta.env.VITE_TRACKSTACK_AUTH_URL ?? "";
+const CUSTOM_API_BASE = import.meta.env.VITE_CUSTOM_API_BASE ?? "";
 const CURRENT_APP_ID = "finance";
 
 interface LayoutProps {
@@ -14,8 +15,25 @@ interface LayoutProps {
 
 export function Layout({ children }: LayoutProps) {
   const [location] = useLocation();
-  const { user, logout } = useAuth();
+  const { user, token, logout } = useAuth();
   const [mobileOpen, setMobileOpen] = useState(false);
+
+  // A pinned custom tracker is meant to be reachable from every
+  // TrackStack app's own AppSwitcher, not just Home's -- see
+  // APP_INTERFACE_SPEC.md §3 and trackstack-ui's usePinnedTrackers. A
+  // pinned tracker's own page only exists on Home, so its href is
+  // Home's own registered base URL (from the SAME registry AppSwitcher
+  // itself reads) plus the tracker's path -- never this app's own origin.
+  const pinnedTrackers = usePinnedTrackers(CUSTOM_API_BASE, token);
+  const apps = useAppRegistry(TRACKSTACK_AUTH_URL);
+  const homeHref = apps.find((a) => a.id === "home")?.href ?? "";
+  const extraItems = pinnedTrackers.map((t) => ({
+    id: `custom_${t.slug}`,
+    label: t.name,
+    href: `${homeHref}/trackers/${t.slug}`,
+    icon: t.icon,
+    active: false,
+  }));
 
   const navItems = [
     { href: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -70,7 +88,7 @@ export function Layout({ children }: LayoutProps) {
   return (
     <div className="flex min-h-screen w-full bg-background">
       {/* App Switcher */}
-      <AppSwitcher authBaseUrl={TRACKSTACK_AUTH_URL} currentAppId={CURRENT_APP_ID} />
+      <AppSwitcher authBaseUrl={TRACKSTACK_AUTH_URL} currentAppId={CURRENT_APP_ID} iconMap={ICON_COMPONENTS} extraItems={extraItems} />
 
       {/* Desktop sidebar */}
       <aside className="w-64 flex-shrink-0 bg-sidebar border-r border-sidebar-border hidden md:flex flex-col">
@@ -109,7 +127,7 @@ export function Layout({ children }: LayoutProps) {
       
       <main className="flex-1 flex flex-col min-w-0 overflow-hidden">
         {/* Mobile: App switcher bar */}
-        <MobileAppSwitcher authBaseUrl={TRACKSTACK_AUTH_URL} currentAppId={CURRENT_APP_ID} />
+        <MobileAppSwitcher authBaseUrl={TRACKSTACK_AUTH_URL} currentAppId={CURRENT_APP_ID} iconMap={ICON_COMPONENTS} extraItems={extraItems} />
 
         {/* Mobile header */}
         <header className="h-14 md:hidden flex items-center px-4 border-b border-border bg-card gap-3">
