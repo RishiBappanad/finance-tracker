@@ -1,10 +1,10 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
 import { bankTransactions, accounts, institutions, receiptTransactionMatches, joinTransactionOwnership, ownedByUser, logDomainEvent, aggregateByCategory } from "@workspace/db";
-import { eq, and, gte, lte, like, sql, isNull, inArray } from "drizzle-orm";
+import { eq, and, gte, lte, like, sql, isNull, isNotNull, inArray } from "drizzle-orm";
 import { ListTransactionsQueryParams } from "@workspace/api-zod";
 import { getPlaidAdapter } from "../services/plaid.js";
-import { categorizeTransactions, type TransactionInput } from "../services/categorizer.js";
+import { categorizeTransactions, normalizeMerchantKey, type TransactionInput, type Category } from "../services/categorizer.js";
 import { getAllCategoryNames } from "../lib/categories.js";
 
 const router = Router();
@@ -52,6 +52,59 @@ function serializeTxn(t: any, matchId?: number | null) {
     matchId: matchId ?? null,
     createdAt: t.createdAt?.toISOString?.() ?? t.createdAt ?? "",
   };
+}
+
+// Shared by both categorization call sites (POST /sync and POST /categorize)
+// -- builds a merchant -> category map from this user's OWN past
+// categorizations, keyed with the exact same normalization categorizer.ts
+// uses internally so a lookup here always matches its merchant-name keys.
+// A manual correction (categoryAutoAssigned false) is trusted over the
+// categorizer's own past guesses for that merchant; within whichever subset
+// applies, the most frequent category wins, ties broken by most recent.
+async function getHistoricalCategoryMap(userId: number): Promise<Map<string, Category>> {
+  const rows = await joinTransactionOwnership(db
+    .select({
+      merchantName: bankTransactions.merchantName,
+      merchantNameRaw: bankTransactions.merchantNameRaw,
+      userCategory: bankTransactions.userCategory,
+      categoryAutoAssigned: bankTransactions.categoryAutoAssigned,
+      date: bankTransactions.date,
+    })
+    .from(bankTransactions).$dynamic())
+    .where(and(ownedByUser(userId), isNotNull(bankTransactions.userCategory)));
+
+  const byMerchant = new Map<string, { category: string; manual: boolean; date: string }[]>();
+  for (const row of rows) {
+    const key = normalizeMerchantKey(row.merchantName ?? row.merchantNameRaw);
+    if (!key || !row.userCategory) continue;
+    const list = byMerchant.get(key) ?? [];
+    list.push({ category: row.userCategory, manual: !row.categoryAutoAssigned, date: row.date });
+    byMerchant.set(key, list);
+  }
+
+  const result = new Map<string, Category>();
+  for (const [key, entries] of byMerchant) {
+    const manual = entries.filter((e) => e.manual);
+    const pool = manual.length > 0 ? manual : entries;
+
+    const counts = new Map<string, { count: number; latestDate: string }>();
+    for (const e of pool) {
+      const existing = counts.get(e.category) ?? { count: 0, latestDate: e.date };
+      existing.count += 1;
+      if (e.date > existing.latestDate) existing.latestDate = e.date;
+      counts.set(e.category, existing);
+    }
+
+    let best: { category: string; count: number; latestDate: string } | null = null;
+    for (const [category, stats] of counts) {
+      if (!best || stats.count > best.count || (stats.count === best.count && stats.latestDate > best.latestDate)) {
+        best = { category, ...stats };
+      }
+    }
+    if (best) result.set(key, best.category as Category);
+  }
+
+  return result;
 }
 
 // GET /transactions/ignored — list the CALLING USER's hidden/ignored transactions.
@@ -259,14 +312,15 @@ router.post("/sync", async (req, res) => {
   }
 
   // Passively categorize every transaction this sync just created, the same
-  // rule/LLM/fallback tiers the manual "Categorize" button uses -- so a
-  // newly-synced transaction shows up with a category already attached
+  // historical/rule/LLM/fallback tiers the manual "Categorize" button uses --
+  // so a newly-synced transaction shows up with a category already attached
   // instead of sitting uncategorized until the user runs it by hand. Marked
   // `categoryAutoAssigned` so the UI can flag it as a guess to verify,
   // never silently presented as something the user chose.
   let totalCategorized = 0;
   if (newlyInserted.length > 0) {
-    const categorizations = await categorizeTransactions(newlyInserted);
+    const historicalCategories = await getHistoricalCategoryMap(req.user!.userId);
+    const categorizations = await categorizeTransactions(newlyInserted, historicalCategories);
     for (const result of categorizations) {
       const [row] = await db
         .update(bankTransactions)
@@ -410,7 +464,8 @@ router.post("/categorize", async (req, res) => {
     categoryDetail: t.categoryDetail,
   }));
 
-  const results = await categorizeTransactions(inputs);
+  const historicalCategories = await getHistoricalCategoryMap(userId);
+  const results = await categorizeTransactions(inputs, historicalCategories);
 
   // Write categories to DB
   let categorized = 0;

@@ -1,8 +1,10 @@
 import { describe, it, expect } from "vitest";
 import {
   categorizeTransactions,
+  normalizeMerchantKey,
   CATEGORIES,
   type TransactionInput,
+  type Category,
 } from "../../artifacts/api-server/src/services/categorizer.js";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -246,6 +248,68 @@ describe("categorizer — batch processing", () => {
     // Even ones are Starbucks (Food & Dining), odd ones are Other (fallback)
     expect(results.filter((r) => r.category === "Food & Dining")).toHaveLength(60);
     expect(results.filter((r) => r.category === "Other")).toHaveLength(60);
+  });
+});
+
+// ── Historical categorization ─────────────────────────────────────────────
+
+describe("categorizer — historical priority", () => {
+  it("prefers a historical match over a rule match for the same merchant", async () => {
+    const historical = new Map<string, Category>([["mcdonald's", "Gifts & Donations"]]);
+    const results = await categorizeTransactions(
+      [mkTxn({ merchantName: "McDonald's" })],
+      historical
+    );
+    expect(results[0].category).toBe("Gifts & Donations");
+    expect(results[0].method).toBe("historical");
+  });
+
+  it("falls through to rule-based when no historical entry matches the merchant", async () => {
+    const historical = new Map<string, Category>([["some other merchant", "Travel"]]);
+    const results = await categorizeTransactions(
+      [mkTxn({ merchantName: "McDonald's" })],
+      historical
+    );
+    expect(results[0].category).toBe("Food & Dining");
+    expect(results[0].method).toBe("rule");
+  });
+
+  it("matches historically regardless of case via normalizeMerchantKey", async () => {
+    const historical = new Map<string, Category>([["joe's diner", "Food & Dining"]]);
+    const results = await categorizeTransactions(
+      [mkTxn({ merchantName: "JOE'S DINER" })],
+      historical
+    );
+    expect(results[0].category).toBe("Food & Dining");
+    expect(results[0].method).toBe("historical");
+  });
+
+  it("uses merchantNameRaw for the historical lookup when merchantName is null", async () => {
+    const historical = new Map<string, Category>([["raw merchant co", "Investment"]]);
+    const results = await categorizeTransactions(
+      [mkTxn({ merchantName: null, merchantNameRaw: "Raw Merchant Co" })],
+      historical
+    );
+    expect(results[0].category).toBe("Investment");
+    expect(results[0].method).toBe("historical");
+  });
+
+  it("defaults to no historical matches when the map is omitted", async () => {
+    const results = await categorizeTransactions([mkTxn({ merchantName: "McDonald's" })]);
+    expect(results[0].method).toBe("rule");
+  });
+});
+
+describe("normalizeMerchantKey", () => {
+  it("lowercases and trims", () => {
+    expect(normalizeMerchantKey("  McDonald's  ")).toBe("mcdonald's");
+  });
+
+  it("returns null for empty, whitespace-only, null, or undefined input", () => {
+    expect(normalizeMerchantKey("")).toBeNull();
+    expect(normalizeMerchantKey("   ")).toBeNull();
+    expect(normalizeMerchantKey(null)).toBeNull();
+    expect(normalizeMerchantKey(undefined)).toBeNull();
   });
 });
 

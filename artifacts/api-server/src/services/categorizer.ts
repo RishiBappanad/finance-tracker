@@ -2,10 +2,13 @@
  * Transaction Categorization Service
  *
  * Priority:
- * 1. Rule-based (merchant name patterns + Plaid categories) — instant
- * 2. LLM — Gemini when GEMINI_API_KEY is set (the only LLM reachable from
+ * 1. Historical — this same user's own past categorization of this exact
+ *    merchant, if they have one; beats a generic rule or an LLM guess since
+ *    it reflects how THIS user actually wants THIS merchant categorized
+ * 2. Rule-based (merchant name patterns + Plaid categories) — instant
+ * 3. LLM — Gemini when GEMINI_API_KEY is set (the only LLM reachable from
  *    the deployed Cloud Run service), else Ollama for local dev — ~2-3s/batch
- * 3. Fallback to "Other"
+ * 4. Fallback to "Other"
  *
  * Set GEMINI_API_KEY to enable Gemini categorization (same key already
  * used by receipt-ocr.ts). Without it, falls back to OLLAMA_BASE_URL
@@ -50,7 +53,27 @@ export interface TransactionInput {
 export interface CategorizationResult {
   id: string;
   category: Category;
-  method: "rule" | "llm" | "fallback";
+  method: "historical" | "rule" | "llm" | "fallback";
+}
+
+// ── Historical categorization ────────────────────────────────────────────────
+
+// Same normalization the caller must use when building the map it passes in
+// (see transactions.ts's getHistoricalCategoryMap) -- exported so both sides
+// key their lookups identically rather than keeping two copies of
+// "lowercase + trim" in sync by hand.
+export function normalizeMerchantKey(name: string | null | undefined): string | null {
+  const trimmed = name?.trim().toLowerCase();
+  return trimmed || null;
+}
+
+function categorizeByHistory(
+  txn: TransactionInput,
+  historicalCategories: Map<string, Category>
+): Category | null {
+  const key = normalizeMerchantKey(txn.merchantName ?? txn.merchantNameRaw);
+  if (!key) return null;
+  return historicalCategories.get(key) ?? null;
 }
 
 // ── Rule-based categorization ────────────────────────────────────────────────
@@ -245,13 +268,25 @@ async function categorizeByLLM(transactions: TransactionInput[]): Promise<Map<st
 // ── Main export ───────────────────────────────────────────────────────────────
 
 export async function categorizeTransactions(
-  transactions: TransactionInput[]
+  transactions: TransactionInput[],
+  historicalCategories: Map<string, Category> = new Map()
 ): Promise<CategorizationResult[]> {
   const results: CategorizationResult[] = [];
-  const needsLLM: TransactionInput[] = [];
+  const needsRules: TransactionInput[] = [];
 
-  // Pass 1: Rule-based
+  // Pass 1: Historical
   for (const txn of transactions) {
+    const category = categorizeByHistory(txn, historicalCategories);
+    if (category) {
+      results.push({ id: txn.id, category, method: "historical" });
+    } else {
+      needsRules.push(txn);
+    }
+  }
+
+  // Pass 2: Rule-based
+  const needsLLM: TransactionInput[] = [];
+  for (const txn of needsRules) {
     const category = categorizeByRules(txn);
     if (category) {
       results.push({ id: txn.id, category, method: "rule" });
@@ -260,7 +295,7 @@ export async function categorizeTransactions(
     }
   }
 
-  // Pass 2: LLM for uncategorized (in batches of 20)
+  // Pass 3: LLM for uncategorized (in batches of 20)
   if (needsLLM.length > 0) {
     const BATCH_SIZE = 20;
     for (let i = 0; i < needsLLM.length; i += BATCH_SIZE) {
@@ -272,7 +307,7 @@ export async function categorizeTransactions(
         if (category) {
           results.push({ id: txn.id, category, method: "llm" });
         } else {
-          // Pass 3: Fallback
+          // Pass 4: Fallback
           results.push({ id: txn.id, category: "Other", method: "fallback" });
         }
       }
