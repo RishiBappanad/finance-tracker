@@ -9,6 +9,29 @@ import { getAllCategoryNames } from "../lib/categories.js";
 
 const router = Router();
 
+// Shared column selection for every route that reads a full transaction row
+// (joined with its account) -- the 4 read routes below used to repeat this
+// field list inline and had drifted out of sync once before; defined once
+// here so adding/removing a field only ever needs one edit.
+const TXN_SELECT_COLUMNS = {
+  id: bankTransactions.id,
+  accountId: bankTransactions.accountId,
+  accountName: accounts.name,
+  accountMask: accounts.mask,
+  amount: bankTransactions.amount,
+  currency: bankTransactions.currency,
+  merchantName: bankTransactions.merchantName,
+  merchantNameRaw: bankTransactions.merchantNameRaw,
+  categoryPrimary: bankTransactions.categoryPrimary,
+  categoryDetail: bankTransactions.categoryDetail,
+  userCategory: bankTransactions.userCategory,
+  categoryAutoAssigned: bankTransactions.categoryAutoAssigned,
+  ignored: bankTransactions.ignored,
+  date: bankTransactions.date,
+  pending: bankTransactions.pending,
+  createdAt: bankTransactions.createdAt,
+} as const;
+
 function serializeTxn(t: any, matchId?: number | null) {
   return {
     id: t.id,
@@ -22,6 +45,7 @@ function serializeTxn(t: any, matchId?: number | null) {
     categoryPrimary: t.categoryPrimary ?? null,
     categoryDetail: t.categoryDetail ?? null,
     userCategory: t.userCategory ?? null,
+    categoryAutoAssigned: t.categoryAutoAssigned ?? false,
     ignored: t.ignored ?? false,
     date: t.date,
     pending: t.pending,
@@ -33,23 +57,7 @@ function serializeTxn(t: any, matchId?: number | null) {
 // GET /transactions/ignored — list the CALLING USER's hidden/ignored transactions.
 router.get("/ignored", async (req, res) => {
   const rows = await joinTransactionOwnership(db
-    .select({
-      id: bankTransactions.id,
-      accountId: bankTransactions.accountId,
-      accountName: accounts.name,
-      accountMask: accounts.mask,
-      amount: bankTransactions.amount,
-      currency: bankTransactions.currency,
-      merchantName: bankTransactions.merchantName,
-      merchantNameRaw: bankTransactions.merchantNameRaw,
-      categoryPrimary: bankTransactions.categoryPrimary,
-      categoryDetail: bankTransactions.categoryDetail,
-      userCategory: bankTransactions.userCategory,
-      ignored: bankTransactions.ignored,
-      date: bankTransactions.date,
-      pending: bankTransactions.pending,
-      createdAt: bankTransactions.createdAt,
-    })
+    .select(TXN_SELECT_COLUMNS)
     .from(bankTransactions).$dynamic())
     .where(and(eq(bankTransactions.ignored, true), ownedByUser(req.user!.userId)))
     .orderBy(bankTransactions.date);
@@ -64,23 +72,7 @@ router.get("/unmatched", async (req, res) => {
     .from(receiptTransactionMatches);
 
   const rows = await joinTransactionOwnership(db
-    .select({
-      id: bankTransactions.id,
-      accountId: bankTransactions.accountId,
-      accountName: accounts.name,
-      accountMask: accounts.mask,
-      amount: bankTransactions.amount,
-      currency: bankTransactions.currency,
-      merchantName: bankTransactions.merchantName,
-      merchantNameRaw: bankTransactions.merchantNameRaw,
-      categoryPrimary: bankTransactions.categoryPrimary,
-      categoryDetail: bankTransactions.categoryDetail,
-      userCategory: bankTransactions.userCategory,
-      ignored: bankTransactions.ignored,
-      date: bankTransactions.date,
-      pending: bankTransactions.pending,
-      createdAt: bankTransactions.createdAt,
-    })
+    .select(TXN_SELECT_COLUMNS)
     .from(bankTransactions).$dynamic())
     .where(and(ownedByUser(userId), sql`${bankTransactions.id} NOT IN (${matched})`))
     .orderBy(bankTransactions.date);
@@ -101,23 +93,7 @@ router.get("/", async (req, res) => {
     conditions.push(like(bankTransactions.merchantName, `%${params.search}%`));
 
   const rows = await joinTransactionOwnership(db
-    .select({
-      id: bankTransactions.id,
-      accountId: bankTransactions.accountId,
-      accountName: accounts.name,
-      accountMask: accounts.mask,
-      amount: bankTransactions.amount,
-      currency: bankTransactions.currency,
-      merchantName: bankTransactions.merchantName,
-      merchantNameRaw: bankTransactions.merchantNameRaw,
-      categoryPrimary: bankTransactions.categoryPrimary,
-      categoryDetail: bankTransactions.categoryDetail,
-      userCategory: bankTransactions.userCategory,
-      ignored: bankTransactions.ignored,
-      date: bankTransactions.date,
-      pending: bankTransactions.pending,
-      createdAt: bankTransactions.createdAt,
-    })
+    .select(TXN_SELECT_COLUMNS)
     .from(bankTransactions).$dynamic())
     .where(conditions.length ? and(...conditions) : undefined)
     .orderBy(bankTransactions.date);
@@ -153,6 +129,9 @@ router.post("/sync", async (req, res) => {
   let totalRemoved = 0;
   const processedInstitutions = new Set<string>();
   const errors: Array<{ institution: string; error: string }> = [];
+  // Collected across every institution/page so categorization runs once in
+  // batches at the end, rather than once per institution.
+  const newlyInserted: TransactionInput[] = [];
 
   for (const account of allAccounts) {
     const institution = institutionMap.get(account.institutionId);
@@ -203,6 +182,14 @@ router.post("/sync", async (req, res) => {
               label: inserted.merchantName ?? inserted.merchantNameRaw, source: "plaid", sourceId: inserted.id,
               metadata: { merchantNameRaw: inserted.merchantNameRaw, currency: inserted.currency, pending: inserted.pending, ignored: false },
               occurredAt: new Date(inserted.date),
+            });
+            newlyInserted.push({
+              id: inserted.id,
+              merchantName: inserted.merchantName,
+              merchantNameRaw: inserted.merchantNameRaw,
+              amount: inserted.amount,
+              categoryPrimary: inserted.categoryPrimary,
+              categoryDetail: inserted.categoryDetail,
             });
           }
           totalAdded++;
@@ -271,7 +258,35 @@ router.post("/sync", async (req, res) => {
     }
   }
 
-  res.json({ added: totalAdded, removed: totalRemoved, updated: totalModified, accounts: allAccounts.length, errors });
+  // Passively categorize every transaction this sync just created, the same
+  // rule/LLM/fallback tiers the manual "Categorize" button uses -- so a
+  // newly-synced transaction shows up with a category already attached
+  // instead of sitting uncategorized until the user runs it by hand. Marked
+  // `categoryAutoAssigned` so the UI can flag it as a guess to verify,
+  // never silently presented as something the user chose.
+  let totalCategorized = 0;
+  if (newlyInserted.length > 0) {
+    const categorizations = await categorizeTransactions(newlyInserted);
+    for (const result of categorizations) {
+      const [row] = await db
+        .update(bankTransactions)
+        .set({ userCategory: result.category, categoryAutoAssigned: true })
+        .where(eq(bankTransactions.id, result.id))
+        .returning();
+      if (row) {
+        await logDomainEvent(db, {
+          userId: req.user!.userId, ownerType: "transaction", ownerId: row.id, action: "updated",
+          category: row.userCategory ?? row.categoryPrimary, amount: row.amount,
+          label: row.merchantName ?? row.merchantNameRaw, source: row.source, sourceId: row.sourceId,
+          metadata: { merchantNameRaw: row.merchantNameRaw, currency: row.currency, pending: row.pending, ignored: row.ignored, reason: "passive_categorize", method: result.method },
+          occurredAt: new Date(row.date),
+        });
+      }
+      totalCategorized++;
+    }
+  }
+
+  res.json({ added: totalAdded, removed: totalRemoved, updated: totalModified, categorized: totalCategorized, accounts: allAccounts.length, errors });
 });
 
 // GET /transactions/vendors — list the CALLING USER's distinct merchant names.
@@ -347,7 +362,9 @@ router.post("/bulk-categorize", async (req, res) => {
   const ids = ownedIds.map((r) => r.id);
   const updated = await db
     .update(bankTransactions)
-    .set({ userCategory })
+    // Explicit user action -- clears any prior auto-assigned flag, since
+    // this is the user choosing the category themselves, not a guess.
+    .set({ userCategory, categoryAutoAssigned: false })
     .where(inArray(bankTransactions.id, ids))
     .returning();
 
@@ -401,7 +418,7 @@ router.post("/categorize", async (req, res) => {
   for (const result of results) {
     const [row] = await db
       .update(bankTransactions)
-      .set({ userCategory: result.category })
+      .set({ userCategory: result.category, categoryAutoAssigned: true })
       .where(eq(bankTransactions.id, result.id))
       .returning();
     if (row) {
@@ -409,7 +426,7 @@ router.post("/categorize", async (req, res) => {
         userId, ownerType: "transaction", ownerId: row.id, action: "updated",
         category: row.userCategory ?? row.categoryPrimary, amount: row.amount,
         label: row.merchantName ?? row.merchantNameRaw, source: row.source, sourceId: row.sourceId,
-        metadata: { merchantNameRaw: row.merchantNameRaw, currency: row.currency, pending: row.pending, ignored: row.ignored, reason: "ai_categorize" },
+        metadata: { merchantNameRaw: row.merchantNameRaw, currency: row.currency, pending: row.pending, ignored: row.ignored, reason: "ai_categorize", method: result.method },
         occurredAt: new Date(row.date),
       });
     }
@@ -466,6 +483,10 @@ router.patch("/:transactionId", async (req, res) => {
       return void res.status(400).json({ error: "Invalid category", validCategories: allValid });
     }
     updates.userCategory = userCategory;
+    // Explicit user edit -- clears any prior auto-assigned flag, even when
+    // the user picks the same category the categorizer already guessed
+    // (that's how the UI lets someone "confirm" a guess without changing it).
+    updates.categoryAutoAssigned = false;
   }
 
   if (ignored !== undefined) {
@@ -503,23 +524,7 @@ router.patch("/:transactionId", async (req, res) => {
 
 router.get("/:transactionId", async (req, res) => {
   const rows = await joinTransactionOwnership(db
-    .select({
-      id: bankTransactions.id,
-      accountId: bankTransactions.accountId,
-      accountName: accounts.name,
-      accountMask: accounts.mask,
-      amount: bankTransactions.amount,
-      currency: bankTransactions.currency,
-      merchantName: bankTransactions.merchantName,
-      merchantNameRaw: bankTransactions.merchantNameRaw,
-      categoryPrimary: bankTransactions.categoryPrimary,
-      categoryDetail: bankTransactions.categoryDetail,
-      userCategory: bankTransactions.userCategory,
-      ignored: bankTransactions.ignored,
-      date: bankTransactions.date,
-      pending: bankTransactions.pending,
-      createdAt: bankTransactions.createdAt,
-    })
+    .select(TXN_SELECT_COLUMNS)
     .from(bankTransactions).$dynamic())
     .where(and(
       eq(bankTransactions.id, req.params.transactionId),

@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { CheckCircle2, EyeOff, Eye, Users, Loader2 } from "lucide-react";
+import { CheckCircle2, EyeOff, Eye, Users, Loader2, Sparkles, Check } from "lucide-react";
 import { API_BASE, authFetch } from "@/lib/api";
 import { CategoryCombobox } from "@/components/category-combobox";
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,11 @@ export interface TransactionData {
   categoryPrimary: string | null;
   categoryDetail: string | null;
   userCategory: string | null;
+  // True when `userCategory` was assigned by the categorizer (passively on
+  // sync, or via the manual "Categorize" button) and hasn't been confirmed
+  // or changed by the user yet -- lets the row flag it as a guess rather
+  // than presenting it as something the user picked.
+  categoryAutoAssigned?: boolean;
   ignored?: boolean;
   date: string;
   pending: boolean;
@@ -90,7 +95,9 @@ export function TransactionRow({
 }: TransactionRowProps) {
   const [categories, setCategories] = useState<string[]>(_categoriesCache ?? []);
   const [localCategory, setLocalCategory] = useState(txn.userCategory);
+  const [autoAssigned, setAutoAssigned] = useState(txn.categoryAutoAssigned ?? false);
   const [isBulkApplying, setIsBulkApplying] = useState(false);
+  const [isConfirming, setIsConfirming] = useState(false);
 
   const merchant = txn.merchantName || txn.merchantNameRaw || "(No merchant)";
   const hasMerchant = !!(txn.merchantName || txn.merchantNameRaw);
@@ -107,10 +114,14 @@ export function TransactionRow({
 
   useEffect(() => {
     setLocalCategory(txn.userCategory);
-  }, [txn.userCategory]);
+    setAutoAssigned(txn.categoryAutoAssigned ?? false);
+  }, [txn.userCategory, txn.categoryAutoAssigned]);
 
   const handleCategoryChange = async (category: string) => {
+    const prevCategory = localCategory;
+    const prevAutoAssigned = autoAssigned;
     setLocalCategory(category);
+    setAutoAssigned(false);
     try {
       await authFetch(`${API_BASE}/api/transactions/${txn.id}`, {
         method: "PATCH",
@@ -119,7 +130,30 @@ export function TransactionRow({
       });
       onCategoryChanged?.();
     } catch {
-      setLocalCategory(txn.userCategory);
+      setLocalCategory(prevCategory);
+      setAutoAssigned(prevAutoAssigned);
+    }
+  };
+
+  // Confirms the categorizer's guess as-is, without changing it -- same
+  // PATCH endpoint as an actual category change, just resubmitting the
+  // current value, which is enough for the backend to clear the
+  // auto-assigned flag.
+  const handleConfirmCategory = async () => {
+    if (!localCategory) return;
+    setIsConfirming(true);
+    setAutoAssigned(false);
+    try {
+      await authFetch(`${API_BASE}/api/transactions/${txn.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userCategory: localCategory }),
+      });
+      onCategoryChanged?.();
+    } catch {
+      setAutoAssigned(true);
+    } finally {
+      setIsConfirming(false);
     }
   };
 
@@ -161,6 +195,22 @@ export function TransactionRow({
             placeholder="Assign category"
             triggerClassName="w-[150px] h-8"
           />
+          {autoAssigned && localCategory && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 shrink-0"
+              onClick={handleConfirmCategory}
+              disabled={isConfirming}
+              title={`Auto-categorized as "${localCategory}" — confirm it's correct`}
+            >
+              {isConfirming ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+              ) : (
+                <Sparkles className="h-3.5 w-3.5 text-amber-500" />
+              )}
+            </Button>
+          )}
           {showBulkApply && hasMerchant && localCategory && (
             <Button
               variant="ghost"
@@ -182,7 +232,11 @@ export function TransactionRow({
 
       {/* Category badge (when no picker) */}
       {showCategoryBadge && !showCategoryPicker && localCategory && (
-        <span className="text-xs bg-secondary px-2 py-0.5 rounded-full text-muted-foreground shrink-0">
+        <span
+          className="flex items-center gap-1 text-xs bg-secondary px-2 py-0.5 rounded-full text-muted-foreground shrink-0"
+          title={autoAssigned ? `Auto-categorized as "${localCategory}" — not yet confirmed` : undefined}
+        >
+          {autoAssigned && <Sparkles className="h-3 w-3 text-amber-500" />}
           {localCategory}
         </span>
       )}

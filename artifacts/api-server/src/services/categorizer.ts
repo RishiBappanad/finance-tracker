@@ -3,11 +3,14 @@
  *
  * Priority:
  * 1. Rule-based (merchant name patterns + Plaid categories) — instant
- * 2. LLM via Ollama (local inference) — ~2-3s per batch
+ * 2. LLM — Gemini when GEMINI_API_KEY is set (the only LLM reachable from
+ *    the deployed Cloud Run service), else Ollama for local dev — ~2-3s/batch
  * 3. Fallback to "Other"
  *
- * Set OLLAMA_BASE_URL (default http://localhost:11434) and OLLAMA_MODEL
- * (default llama3.2:3b) to enable LLM categorization.
+ * Set GEMINI_API_KEY to enable Gemini categorization (same key already
+ * used by receipt-ocr.ts). Without it, falls back to OLLAMA_BASE_URL
+ * (default http://localhost:11434) / OLLAMA_MODEL (default llama3.2:3b)
+ * for local-only testing — Ollama isn't reachable from production.
  */
 
 // Standard spending categories
@@ -137,26 +140,76 @@ function categorizeByRules(txn: TransactionInput): Category | null {
   return null;
 }
 
-// ── LLM categorization via Ollama ────────────────────────────────────────────
+// ── LLM categorization ────────────────────────────────────────────────────
 
-async function categorizeByLLM(transactions: TransactionInput[]): Promise<Map<string, Category>> {
-  const baseUrl = process.env.OLLAMA_BASE_URL ?? "http://localhost:11434";
-  const model = process.env.OLLAMA_MODEL ?? "llama3.2:3b";
-
-  const results = new Map<string, Category>();
-
-  // Build the prompt
+function buildCategorizationPrompt(transactions: TransactionInput[]): string {
   const txnList = transactions
     .map((t, i) => `${i + 1}. "${t.merchantName || t.merchantNameRaw || "Unknown"}" $${Math.abs(t.amount).toFixed(2)}`)
     .join("\n");
 
-  const prompt = `Categorize each transaction into exactly one category from this list:
+  return `Categorize each transaction into exactly one category from this list:
 ${CATEGORIES.join(", ")}
 
 Transactions:
 ${txnList}
 
 Respond with ONLY a JSON array of category strings in the same order, no explanation. Example: ["Food & Dining", "Shopping", "Other"]`;
+}
+
+function parseCategorizationResponse(text: string, transactions: TransactionInput[]): Map<string, Category> {
+  const results = new Map<string, Category>();
+
+  const match = text.match(/\[[\s\S]*\]/);
+  if (!match) return results;
+
+  const categories: string[] = JSON.parse(match[0]);
+  for (let i = 0; i < Math.min(categories.length, transactions.length); i++) {
+    const cat = categories[i];
+    if (CATEGORIES.includes(cat as Category)) {
+      results.set(transactions[i].id, cat as Category);
+    }
+  }
+
+  return results;
+}
+
+// Mirrors receipt-ocr.ts's Gemini adapter: same raw-REST-call style, same
+// model/endpoint, same graceful-degradation contract (any failure returns
+// an empty map rather than throwing, so the caller falls through to "Other").
+async function categorizeByGemini(transactions: TransactionInput[]): Promise<Map<string, Category>> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return new Map();
+
+  try {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${apiKey}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: buildCategorizationPrompt(transactions) }] }],
+          generationConfig: { temperature: 0.1, maxOutputTokens: 500 },
+        }),
+        signal: AbortSignal.timeout(15000),
+      }
+    );
+
+    if (!response.ok) return new Map();
+
+    const data = (await response.json()) as { candidates?: [{ content?: { parts?: [{ text?: string }] } }] };
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!text) return new Map();
+
+    return parseCategorizationResponse(text, transactions);
+  } catch {
+    // Gemini unavailable, timed out, or malformed response — graceful degradation
+    return new Map();
+  }
+}
+
+async function categorizeByOllama(transactions: TransactionInput[]): Promise<Map<string, Category>> {
+  const baseUrl = process.env.OLLAMA_BASE_URL ?? "http://localhost:11434";
+  const model = process.env.OLLAMA_MODEL ?? "llama3.2:3b";
 
   try {
     const response = await fetch(`${baseUrl}/api/generate`, {
@@ -164,35 +217,29 @@ Respond with ONLY a JSON array of category strings in the same order, no explana
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model,
-        prompt,
+        prompt: buildCategorizationPrompt(transactions),
         stream: false,
         options: { temperature: 0.1, num_predict: 500 },
       }),
       signal: AbortSignal.timeout(15000), // 15s timeout
     });
 
-    if (!response.ok) return results;
+    if (!response.ok) return new Map();
 
     const data = (await response.json()) as { response: string };
-    const text = data.response.trim();
-
-    // Extract JSON array from response
-    const match = text.match(/\[[\s\S]*\]/);
-    if (!match) return results;
-
-    const categories: string[] = JSON.parse(match[0]);
-
-    for (let i = 0; i < Math.min(categories.length, transactions.length); i++) {
-      const cat = categories[i];
-      if (CATEGORIES.includes(cat as Category)) {
-        results.set(transactions[i].id, cat as Category);
-      }
-    }
+    return parseCategorizationResponse(data.response.trim(), transactions);
   } catch {
-    // LLM unavailable or timed out — graceful degradation
+    // Ollama unavailable or timed out — graceful degradation
+    return new Map();
   }
+}
 
-  return results;
+// Gemini is preferred since it's the only LLM reachable from the deployed
+// Cloud Run service (OLLAMA_BASE_URL has no route there) -- Ollama remains
+// available as a local-dev-only fallback when no Gemini key is configured.
+async function categorizeByLLM(transactions: TransactionInput[]): Promise<Map<string, Category>> {
+  if (process.env.GEMINI_API_KEY) return categorizeByGemini(transactions);
+  return categorizeByOllama(transactions);
 }
 
 // ── Main export ───────────────────────────────────────────────────────────────

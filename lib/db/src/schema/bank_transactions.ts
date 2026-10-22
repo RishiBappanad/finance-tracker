@@ -13,6 +13,13 @@ export const bankTransactions = pgTable("bank_transactions", {
   categoryPrimary: text("category_primary"),
   categoryDetail: text("category_detail"),
   userCategory: text("user_category"),
+  // True when `userCategory` was set by the categorizer (sync-time passive
+  // assignment or the manual "Categorize" button), not hand-picked by the
+  // user -- lets the UI show "auto-categorized, verify" instead of
+  // presenting a guess as if the user had chosen it themselves. Cleared
+  // back to false the moment the user edits or bulk-applies a category
+  // through any user-driven endpoint.
+  categoryAutoAssigned: boolean("category_auto_assigned").notNull().default(false),
   ignored: boolean("ignored").notNull().default(false),
   date: date("date").notNull(),
   pending: boolean("pending").notNull().default(false),
