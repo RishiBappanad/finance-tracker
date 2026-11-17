@@ -1,7 +1,20 @@
-import type { NodePgDatabase } from "drizzle-orm/node-postgres";
+import type { NodePgDatabase, NodePgQueryResultHKT } from "drizzle-orm/node-postgres";
+import type { PgTransaction } from "drizzle-orm/pg-core";
+import type { ExtractTablesWithRelations } from "drizzle-orm";
 import * as schema from "./schema";
 import { domainEvents } from "./schema/domain_events";
 import { evaluateGoalsForEvent } from "./goals-evaluation";
+
+// insertDomainEvent is the one function in this file that's actually
+// called with a db.transaction() callback's `tx` (BATCH_EVENTS_SPEC.md's
+// batch route) as well as the plain `db` -- a PgTransaction isn't
+// assignable to NodePgDatabase (it's missing `$client`, the live pool
+// handle), so it needs this wider type. Nothing else here takes `tx`:
+// evaluateGoalsForEvent/evaluateGoalsForDomainEvent always run after
+// commit, on the plain `db` (see BATCH_EVENTS_SPEC.md's "All-or-nothing
+// means the WRITES, not the side effects"), so their existing
+// NodePgDatabase-only type is correct as-is.
+export type DbOrTx = NodePgDatabase<typeof schema> | PgTransaction<NodePgQueryResultHKT, typeof schema, ExtractTablesWithRelations<typeof schema>>;
 
 /**
  * Universal Event Contract backing-store writer -- the Drizzle sibling
@@ -47,22 +60,39 @@ import { evaluateGoalsForEvent } from "./goals-evaluation";
  * goals-evaluation.ts's evaluateGoalTransition -- which requires knowing
  * the just-inserted row's own id to exclude it from the "before" query.
  */
-export async function logDomainEvent(
-  db: NodePgDatabase<typeof schema>,
-  params: {
-    userId: number;
-    ownerType: string;
-    ownerId: string;
-    action: "created" | "updated" | "deleted" | "met" | "exceeded";
-    category?: string | null;
-    amount?: number;
-    label?: string | null;
-    source?: string | null;
-    sourceId?: string | null;
-    metadata?: Record<string, unknown>;
-    occurredAt?: Date;
-  }
-): Promise<void> {
+// BATCH_EVENTS_SPEC.md's suggested default -- a plain constant, not
+// configurable: large enough for a real bulk-log use case, small enough
+// that a single request can't become a multi-minute transaction or an
+// unbounded memory hold.
+export const MAX_BATCH_SIZE = 200;
+
+interface LogDomainEventParams {
+  userId: number;
+  ownerType: string;
+  ownerId: string;
+  action: "created" | "updated" | "deleted" | "met" | "exceeded";
+  category?: string | null;
+  amount?: number;
+  label?: string | null;
+  source?: string | null;
+  sourceId?: string | null;
+  metadata?: Record<string, unknown>;
+  occurredAt?: Date;
+}
+
+/** Just the insert half of logDomainEvent -- split out
+ * (BATCH_EVENTS_SPEC.md) so a batch route can run N of these inside ONE
+ * db.transaction(), with goal evaluation run afterward on the plain
+ * `db`, not the transaction (see BATCH_EVENTS_SPEC.md's "All-or-nothing
+ * means the WRITES, not the side effects" -- a goal_met/goal_exceeded
+ * row from a batch write is best-effort, same as it already is for a
+ * single write, not part of the batch's own atomic guarantee). Every
+ * other existing call site keeps going through logDomainEvent below,
+ * unchanged. */
+export async function insertDomainEvent(
+  db: DbOrTx,
+  params: LogDomainEventParams,
+): Promise<{ id: number; eventType: string }> {
   const eventType = `${params.ownerType}_${params.action}`;
   const [inserted] = await db
     .insert(domainEvents)
@@ -80,14 +110,30 @@ export async function logDomainEvent(
       ...(params.occurredAt ? { occurredAt: params.occurredAt } : {}),
     })
     .returning({ id: domainEvents.id });
+  return { id: inserted!.id, eventType };
+}
 
+/** Re-checks this event's own active goals (goals-evaluation.ts) against
+ * the write that just happened -- the recursion guard (ownerType "goal"
+ * never re-triggers) lives here, not in insertDomainEvent, since that
+ * half has no opinion on what happens after its own insert. */
+export async function evaluateGoalsForDomainEvent(
+  db: NodePgDatabase<typeof schema>,
+  params: LogDomainEventParams,
+  inserted: { id: number; eventType: string },
+): Promise<void> {
   if (params.ownerType === "goal") return;
   await evaluateGoalsForEvent(db, {
-    id: inserted!.id,
+    id: inserted.id,
     userId: params.userId,
     category: params.category ?? null,
-    eventType,
+    eventType: inserted.eventType,
     ownerType: params.ownerType,
     action: params.action,
   });
+}
+
+export async function logDomainEvent(db: NodePgDatabase<typeof schema>, params: LogDomainEventParams): Promise<void> {
+  const inserted = await insertDomainEvent(db, params);
+  await evaluateGoalsForDomainEvent(db, params, inserted);
 }

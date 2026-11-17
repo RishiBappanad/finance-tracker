@@ -163,6 +163,74 @@ describe("POST /events/log", () => {
   });
 });
 
+describe("POST /events/log/batch (BATCH_EVENTS_SPEC.md)", () => {
+  it("creates every item atomically, in order, against the same synthetic manual account", async () => {
+    const res = await request(app)
+      .post("/api/events/log/batch")
+      .set(headersA)
+      .send({ events: [
+        { event_type: "transaction", occurred_at: "2026-09-09", amount: 1, metadata: { merchantName: "Batch A" } },
+        { event_type: "transaction", occurred_at: "2026-09-09", amount: 2, metadata: { merchantName: "Batch B" } },
+        { event_type: "transaction", occurred_at: "2026-09-09", amount: 3, metadata: { merchantName: "Batch C" } },
+      ] });
+    expect(res.status).toBe(201);
+    expect(res.body.results.every((r: { status: string }) => r.status === "logged")).toBe(true);
+
+    const ids = res.body.results.map((r: { id: string }) => r.id);
+    const rows = await db.select().from(bankTransactions).where(eq(bankTransactions.accountId, `manual-${userA.id}`));
+    expect(ids.every((id: string) => rows.some((r) => r.id === id))).toBe(true);
+  });
+
+  it("validates every item BEFORE writing any -- one bad item writes nothing", async () => {
+    const before = await db.select().from(bankTransactions).where(eq(bankTransactions.accountId, `manual-${userA.id}`));
+    const res = await request(app)
+      .post("/api/events/log/batch")
+      .set(headersA)
+      .send({ events: [
+        { event_type: "transaction", occurred_at: "2026-09-09", amount: 1 },
+        { event_type: "not_a_real_type", occurred_at: "2026-09-09" },
+      ] });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/events\[1\]/);
+
+    const after = await db.select().from(bankTransactions).where(eq(bankTransactions.accountId, `manual-${userA.id}`));
+    expect(after.length).toBe(before.length);
+  });
+
+  it("rejects an empty array and a batch over the size cap", async () => {
+    expect((await request(app).post("/api/events/log/batch").set(headersA).send({ events: [] })).status).toBe(400);
+    const tooMany = Array.from({ length: 201 }, () => ({ event_type: "transaction", occurred_at: "2026-09-09", amount: 1 }));
+    expect((await request(app).post("/api/events/log/batch").set(headersA).send({ events: tooMany })).status).toBe(400);
+  });
+
+  it("reports a duplicate (source, source_id) as a per-item result, including one that duplicates an EARLIER item in the same batch", async () => {
+    const res = await request(app)
+      .post("/api/events/log/batch")
+      .set(headersA)
+      .send({ events: [
+        { event_type: "transaction", occurred_at: "2026-09-09", amount: 5, source: "test-dup-source", source_id: "dup-1" },
+        { event_type: "transaction", occurred_at: "2026-09-09", amount: 9, source: "test-dup-source", source_id: "dup-2" },
+        { event_type: "transaction", occurred_at: "2026-09-09", amount: 5, source: "test-dup-source", source_id: "dup-1" },
+      ] });
+    expect(res.status).toBe(201);
+    expect(res.body.results[0].status).toBe("logged");
+    expect(res.body.results[1].status).toBe("logged");
+    expect(res.body.results[2]).toEqual({ status: "duplicate", id: res.body.results[0].id });
+  });
+
+  it("sees a duplicate (source, source_id) from an EARLIER request too, not just this batch", async () => {
+    const first = await request(app)
+      .post("/api/events/log")
+      .set(headersA)
+      .send({ event_type: "transaction", occurred_at: "2026-09-09", amount: 7, source: "test-dup-source-2", source_id: "dup-cross" });
+    const res = await request(app)
+      .post("/api/events/log/batch")
+      .set(headersA)
+      .send({ events: [{ event_type: "transaction", occurred_at: "2026-09-09", amount: 7, source: "test-dup-source-2", source_id: "dup-cross" }] });
+    expect(res.body.results).toEqual([{ status: "duplicate", id: first.body.id }]);
+  });
+});
+
 describe("GET /events cross-user isolation and shape", () => {
   it("only returns the caller's own events, including pre-existing Plaid-synced ones", async () => {
     const res = await request(app).get("/api/events?start=2026-09-01&end=2026-09-30").set(headersA);

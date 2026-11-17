@@ -27,7 +27,7 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
 import { db } from "@workspace/db";
-import { bankTransactions, domainEvents, userCategories, logDomainEvent } from "@workspace/db";
+import { bankTransactions, domainEvents, userCategories, logDomainEvent, insertDomainEvent, evaluateGoalsForDomainEvent, MAX_BATCH_SIZE, type DbOrTx } from "@workspace/db";
 import { eq, and, gte, lt, asc, sql, type SQL } from "drizzle-orm";
 import { LogEventBody, GetEventsQueryParams, GetEventAggregationsQueryParams } from "@workspace/api-zod";
 import { getOrCreateManualAccountId } from "../lib/manual-account.js";
@@ -231,6 +231,107 @@ eventsRouter.post("/log", async (req, res) => {
   });
 
   res.json({ status: "logged", id: inserted!.id });
+});
+
+/** The transaction already created from this (accountId, source,
+ * sourceId), if any -- there's no UNIQUE constraint on bank_transactions
+ * backing this (unlike todo-tracker's todos table), so this is a plain
+ * SELECT, not something the database would enforce on its own. Only used
+ * by the batch route below: the single POST /events/log above has never
+ * deduped this way (a known, separate gap -- see ACTION_ITEMS.md), not
+ * fixed here to keep this change scoped to batch. */
+async function findTransactionBySource(queryable: DbOrTx, accountId: string, source: string, sourceId: string) {
+  const [existing] = await queryable.select().from(bankTransactions).where(
+    and(eq(bankTransactions.accountId, accountId), eq(bankTransactions.source, source), eq(bankTransactions.sourceId, sourceId)),
+  );
+  return existing ?? null;
+}
+
+// BATCH_EVENTS_SPEC.md: an arbitrary number of events in one all-or-
+// nothing request. Every item is validated BEFORE the transaction opens
+// -- one bad item 400s the whole batch, touching the database not at
+// all. The atomic guarantee covers the bank_transactions/domain_events
+// rows only: goal evaluation (evaluateGoalsForDomainEvent) runs AFTER
+// commit, on the plain `db` (not `tx`), same best-effort timing as a
+// single write already has via logDomainEvent -- see
+// insertDomainEvent's own comment on why that split exists. A duplicate
+// (accountId, source, sourceId) -- including one that duplicates an
+// EARLIER item in this same batch -- is a per-item "duplicate" result:
+// findTransactionBySource runs against `tx` (this batch's own in-flight
+// transaction), in order, so it sees this batch's own not-yet-committed
+// inserts.
+eventsRouter.post("/log/batch", async (req, res) => {
+  const items = req.body?.events;
+  if (!Array.isArray(items) || items.length === 0) return void res.status(400).json({ error: "body must be { events: [...] } with at least 1 item" });
+  if (items.length > MAX_BATCH_SIZE) return void res.status(400).json({ error: `events must contain at most ${MAX_BATCH_SIZE} items` });
+
+  const parsedBodies: ReturnType<typeof LogEventBody.parse>[] = [];
+  for (let i = 0; i < items.length; i++) {
+    const parsed = LogEventBody.safeParse(items[i]);
+    if (!parsed.success) return void res.status(400).json({ error: `events[${i}]: Invalid input`, details: parsed.error.issues });
+    if (parsed.data.event_type !== "transaction") {
+      return void res.status(400).json({ error: `events[${i}]: unknown event_type "${parsed.data.event_type}" -- must be "transaction"` });
+    }
+    parsedBodies.push(parsed.data);
+  }
+
+  const userId = req.user!.userId;
+  const accountId = await getOrCreateManualAccountId(userId);
+
+  type Result = { status: "logged"; id: string } | { status: "duplicate"; id: string };
+  const results: Result[] = [];
+  const toEvaluate: { params: Parameters<typeof insertDomainEvent>[1]; inserted: { id: number; eventType: string } }[] = [];
+
+  await db.transaction(async (tx) => {
+    for (const body of parsedBodies) {
+      const metadata = (body.metadata ?? {}) as Record<string, unknown>;
+      const merchantName = typeof metadata.merchantName === "string" ? metadata.merchantName : null;
+      const merchantNameRaw = typeof metadata.merchantNameRaw === "string" ? metadata.merchantNameRaw : null;
+      const currency = typeof metadata.currency === "string" ? metadata.currency : "USD";
+      const source = body.source ?? "manual";
+      const sourceId = body.source_id ?? null;
+
+      if (sourceId) {
+        const existing = await findTransactionBySource(tx, accountId, source, sourceId);
+        if (existing) {
+          results.push({ status: "duplicate", id: existing.id });
+          continue;
+        }
+      }
+
+      const [inserted] = await tx
+        .insert(bankTransactions)
+        .values({
+          id: randomUUID(),
+          accountId,
+          amount: body.amount ?? 0,
+          currency,
+          merchantName,
+          merchantNameRaw,
+          userCategory: body.category ?? null,
+          ignored: body.hidden ?? false,
+          date: body.occurred_at,
+          pending: false,
+          source,
+          sourceId,
+        })
+        .returning();
+
+      const eventParams: Parameters<typeof insertDomainEvent>[1] = {
+        userId, ownerType: "transaction", ownerId: inserted!.id, action: "created",
+        category: inserted!.userCategory, amount: inserted!.amount,
+        label: merchantName ?? merchantNameRaw, source: inserted!.source, sourceId: inserted!.sourceId,
+        metadata: { merchantName, merchantNameRaw, currency, pending: false, ignored: inserted!.ignored },
+        occurredAt: new Date(inserted!.date),
+      };
+      const domainEvent = await insertDomainEvent(tx, eventParams);
+      results.push({ status: "logged", id: inserted!.id });
+      toEvaluate.push({ params: eventParams, inserted: domainEvent });
+    }
+  });
+
+  await Promise.all(toEvaluate.map(({ params, inserted }) => evaluateGoalsForDomainEvent(db, params, inserted)));
+  res.status(201).json({ results });
 });
 
 const DEFAULT_AGGREGATION_OWNER_TYPE = "transaction";
