@@ -3,9 +3,25 @@ steps:
     args:
       - 'build'
       - '--build-arg'
+      - 'BASE_PATH=${_BASE_PATH}'
+      - '--build-arg'
+      - 'API_BASE=${_API_BASE}'
+      - '--build-arg'
       - 'TRACKSTACK_AUTH_URL=${_TRACKSTACK_AUTH_URL}'
       - '-t'
       - '${_IMAGE}'
       - '.'
 images:
   - '${_IMAGE}'
+substitutions:
+  # Matches .github/workflows/deploy.yml's own values -- this service is
+  # only ever meant to be reached through trackstack-gateway at /finance.
+  # Without these two, the frontend builds in standalone/root-path mode:
+  # its asset URLs come out rooted at "/" instead of "/finance/", which
+  # 404s/misroutes through the gateway and produces a blank page with no
+  # app-level console error. Same gap found and fixed in nutrition-
+  # insights' cloudbuild.yaml, 2026-11-17/18 -- this one was the same
+  # bug, not yet hit because no one had rebuilt via this file directly
+  # until now.
+  _BASE_PATH: /finance/
+  _API_BASE: /finance
